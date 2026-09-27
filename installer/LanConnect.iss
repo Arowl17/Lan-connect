@@ -33,6 +33,8 @@ SolidCompression=yes
 WizardStyle=modern
 CloseApplications=force
 RestartApplications=no
+; The only per-user change is removing our own autostart entry on uninstall.
+UsedUserAreasWarning=no
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
