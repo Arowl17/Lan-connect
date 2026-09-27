@@ -8,7 +8,7 @@
 
             <!-- Header -->
             <DockPanel Margin="0,0,0,16">
-                <Image Source="Assets/app.ico" Width="44" Height="44" DockPanel.Dock="Left" Margin="0,0,14,0" />
+                <Image Source="Assets/app.png" Width="44" Height="44" RenderOptions.BitmapScalingMode="HighQuality" DockPanel.Dock="Left" Margin="0,0,14,0" />
                 <StackPanel VerticalAlignment="Center">
                     <TextBlock Text="Lan Connect" FontSize="24" FontWeight="SemiBold" />
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
