@@ -12,6 +12,9 @@ public sealed class NetworkHost : IAsyncDisposable
 {
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(8);
 
+    /// <summary>On a LAN a live computer answers in milliseconds; don't wait long on stale addresses.</summary>
+    private static readonly TimeSpan DialTimeout = TimeSpan.FromSeconds(4);
+
     private readonly DeviceIdentity _identity;
     private readonly Func<string> _deviceName;
     private readonly ITrustStore _trust;
@@ -151,7 +154,7 @@ public sealed class NetworkHost : IAsyncDisposable
         FramedConnection? connection = null;
         try
         {
-            connection = await FramedConnection.ConnectAsync(endPoint, _identity, HandshakeTimeout, _cts.Token).ConfigureAwait(false);
+            connection = await FramedConnection.ConnectAsync(endPoint, _identity, DialTimeout, _cts.Token).ConfigureAwait(false);
             if (connection.PeerFingerprint != peerId)
             {
                 // Something else answered at that address (e.g. DHCP handed it to another machine).

@@ -122,7 +122,16 @@ public sealed class InputPacket
     public static bool TryDecode(ReadOnlySpan<byte> data, out InputPacket packet)
     {
         packet = new InputPacket();
-        try
+        return TryDecodeInto(data, packet);
+    }
+
+    /// <summary>Decodes into an existing packet (reused by the receive path to avoid allocations).</summary>
+    public static bool TryDecodeInto(ReadOnlySpan<byte> data, InputPacket packet)
+    {
+        packet.Items.Clear();
+        packet.Motion = null;
+        packet.Ping = null;
+        packet.Pong = null;
         {
             var r = new SpanReader(data);
             var flags = (PacketFlags)r.U8();
@@ -131,7 +140,7 @@ public sealed class InputPacket
             if (flags.HasFlag(PacketFlags.Ping)) packet.Ping = r.I64();
             if (flags.HasFlag(PacketFlags.Pong)) packet.Pong = r.I64();
             int count = r.U8();
-            if (count > MaxItems)
+            if (r.Failed || count > MaxItems)
             {
                 return false;
             }
@@ -178,13 +187,13 @@ public sealed class InputPacket
                     default:
                         return false;
                 }
+                if (r.Failed)
+                {
+                    return false;
+                }
                 packet.Items.Add(new SequencedItem(seq, at, item));
             }
-            return true;
-        }
-        catch (IndexOutOfRangeException)
-        {
-            return false;
+            return !r.Failed;
         }
     }
 
@@ -218,26 +227,50 @@ public sealed class InputPacket
         public void I64(long v) { BinaryPrimitives.WriteInt64BigEndian(_buffer[Position..], v); Position += 8; }
     }
 
+    /// <summary>Reads big-endian values; past the end it returns zeros and sets <see cref="Failed"/>.</summary>
     private ref struct SpanReader(ReadOnlySpan<byte> data)
     {
         private readonly ReadOnlySpan<byte> _data = data;
         private int _position;
 
-        public byte U8() => _data[_position++];
+        public bool Failed { get; private set; }
 
-        public ushort U16() { var v = BinaryPrimitives.ReadUInt16BigEndian(Take(2)); return v; }
+        public byte U8()
+        {
+            var span = Take(1);
+            return span.IsEmpty ? (byte)0 : span[0];
+        }
 
-        public uint U32() => BinaryPrimitives.ReadUInt32BigEndian(Take(4));
+        public ushort U16()
+        {
+            var span = Take(2);
+            return span.IsEmpty ? (ushort)0 : BinaryPrimitives.ReadUInt16BigEndian(span);
+        }
 
-        public int I32() => BinaryPrimitives.ReadInt32BigEndian(Take(4));
+        public uint U32()
+        {
+            var span = Take(4);
+            return span.IsEmpty ? 0 : BinaryPrimitives.ReadUInt32BigEndian(span);
+        }
 
-        public long I64() => BinaryPrimitives.ReadInt64BigEndian(Take(8));
+        public int I32()
+        {
+            var span = Take(4);
+            return span.IsEmpty ? 0 : BinaryPrimitives.ReadInt32BigEndian(span);
+        }
+
+        public long I64()
+        {
+            var span = Take(8);
+            return span.IsEmpty ? 0 : BinaryPrimitives.ReadInt64BigEndian(span);
+        }
 
         private ReadOnlySpan<byte> Take(int count)
         {
-            if (_position + count > _data.Length)
+            if (Failed || _position + count > _data.Length)
             {
-                throw new IndexOutOfRangeException();
+                Failed = true;
+                return default;
             }
             var slice = _data.Slice(_position, count);
             _position += count;

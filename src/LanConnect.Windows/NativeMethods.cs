@@ -55,6 +55,7 @@ internal static partial class NativeMethods
     public const uint CURSOR_SHOWING = 0x0001;
     public const uint CURSOR_SUPPRESSED = 0x0002;
 
+    public const int SM_SWAPBUTTON = 23;
     public const int SM_XVIRTUALSCREEN = 76;
     public const int SM_YVIRTUALSCREEN = 77;
     public const int SM_CXVIRTUALSCREEN = 78;
@@ -238,6 +239,9 @@ internal static partial class NativeMethods
 
     [LibraryImport("user32.dll")]
     public static partial int GetSystemMetrics(int nIndex);
+
+    [LibraryImport("user32.dll")]
+    public static partial short GetAsyncKeyState(int vKey);
 
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
     public static partial nint GetModuleHandleW(string? lpModuleName);

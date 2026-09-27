@@ -60,9 +60,21 @@ public sealed class SwitchEngine : IDisposable
     private PointI? _pendingCursorMove;
     private Side[] _leaveSides = [Side.Left];
 
+    // Where we recently asked Windows to put the cursor while being controlled. SendInput is
+    // processed asynchronously, so GetCursorPos may still report one of these; only a position
+    // matching none of them means someone moved the cursor locally (e.g. the laptop's touchpad).
+    private readonly PointI[] _recentTargets = new PointI[8];
+    private int _recentTargetCount;
+    private int _recentTargetNext;
+    private readonly Func<ushort, bool> _isKeyDown;
+
+    [ThreadStatic]
+    private static List<Output>? t_outputs;
+
     public SwitchEngine(IPlatform platform, SettingsStore settings, NetworkHost host, DiscoveryService? discovery)
     {
         _platform = platform;
+        _isKeyDown = platform.IsVirtualKeyDown;
         _settings = settings;
         _host = host;
         _discovery = discovery;
@@ -176,6 +188,10 @@ public sealed class SwitchEngine : IDisposable
                             _edgePolicy.Reset();
                             return false;
                         }
+                        if (_router.AnyLocalButtonHeld)
+                        {
+                            _router.PruneLocal(_isKeyDown); // a missed release must not block switching
+                        }
                         var blocked = _router.AnyLocalButtonHeld || IsGameBlockedNow();
                         var decision = _edgePolicy.Evaluate(_layout, _activeSides, from, proposed, nowMs, blocked);
                         if (decision is { } d && _placements.TryGetValue(d.Side, out var id) && _host.GetLink(id) is { } link)
@@ -205,7 +221,8 @@ public sealed class SwitchEngine : IDisposable
     {
         lock (_lock)
         {
-            if (_hotkeys.Feed(e) is { } direction && !_paused)
+            if (_hotkeys.Feed(e) is { } direction && !_paused
+                && (_state != ControlState.Local || _hotkeys.ConfirmModifiers(_isKeyDown)))
             {
                 if (HandleHotkeyLocked(direction))
                 {
@@ -260,7 +277,7 @@ public sealed class SwitchEngine : IDisposable
         _peer = link;
         _peerSide = side;
         _edgePolicy.Reset();
-        _router.BeginCapture();
+        _router.BeginCapture(_isKeyDown);
         link.KeepAwake = true;
         // The cursor enters the other computer through the edge facing us.
         link.Send(InputItem.Enter(side.Opposite(), fraction));
@@ -329,9 +346,40 @@ public sealed class SwitchEngine : IDisposable
 
     // ------------------------------------------------------------------ network threads
 
+    /// <summary>An OS call decided under the lock and performed after releasing it.</summary>
+    private readonly record struct Output(bool IsMove, PointI Position, InputEvent Event)
+    {
+        public static Output Move(PointI position) => new(true, position, default);
+
+        public static Output Inject(in InputEvent e) => new(false, default, e);
+    }
+
+    private static List<Output> RentOutputs()
+    {
+        var list = t_outputs ??= new List<Output>(64);
+        list.Clear();
+        return list;
+    }
+
+    private void Perform(List<Output> outputs)
+    {
+        foreach (var output in outputs)
+        {
+            if (output.IsMove)
+            {
+                _platform.MoveCursorTo(output.Position);
+            }
+            else
+            {
+                _platform.Inject(output.Event);
+            }
+        }
+        outputs.Clear();
+    }
+
     private void OnInputReceived(PeerLink link, IReadOnlyList<ReceivedInput> inputs)
     {
-        var actions = new List<Action>();
+        var outputs = RentOutputs();
         var statusChanged = false;
         lock (_lock)
         {
@@ -341,7 +389,7 @@ public sealed class SwitchEngine : IDisposable
                 {
                     if (_state == ControlState.ControlledBy && _peer == link)
                     {
-                        MoveControlledCursorLocked(link, input.Dx, input.Dy, actions, ref statusChanged);
+                        MoveControlledCursorLocked(link, input.Dx, input.Dy, outputs, ref statusChanged);
                     }
                     continue;
                 }
@@ -356,7 +404,7 @@ public sealed class SwitchEngine : IDisposable
                         }
                         if (_state == ControlState.ControlledBy && _peer != link)
                         {
-                            ReleaseInjectedLocked(actions);
+                            ReleaseInjectedLocked(outputs);
                         }
                         _state = ControlState.ControlledBy;
                         _peer = link;
@@ -364,9 +412,11 @@ public sealed class SwitchEngine : IDisposable
                         _leaveSides = [item.Side];
                         _leavePolicy.Reset();
                         link.KeepAwake = true;
+                        _recentTargetCount = 0;
+                        // Until Windows applies the move, GetCursorPos still reports the old spot.
+                        RememberTarget(_platform.GetCursorPosition());
                         _tracked = _layout.EntryPoint(item.Side, item.Fraction);
-                        var target = _tracked;
-                        actions.Add(() => _platform.MoveCursorTo(target));
+                        MoveCursorLocked(_tracked, outputs);
                         statusChanged = true;
                         Log.Info($"{link.PeerName} is controlling this computer");
                         break;
@@ -381,7 +431,7 @@ public sealed class SwitchEngine : IDisposable
                     case InputItemType.TakeBack:
                         if (_state == ControlState.ControlledBy && _peer == link)
                         {
-                            ReleaseInjectedLocked(actions);
+                            ReleaseInjectedLocked(outputs);
                             link.KeepAwake = false;
                             _state = ControlState.Local;
                             _peer = null;
@@ -394,17 +444,14 @@ public sealed class SwitchEngine : IDisposable
                         {
                             var e = item.Event;
                             _injected.Observe(e);
-                            actions.Add(() => _platform.Inject(e));
+                            outputs.Add(Output.Inject(e));
                         }
                         break;
                 }
             }
         }
 
-        foreach (var action in actions)
-        {
-            action();
-        }
+        Perform(outputs);
         if (statusChanged)
         {
             UpdateMouseHook();
@@ -412,13 +459,15 @@ public sealed class SwitchEngine : IDisposable
         }
     }
 
-    private void MoveControlledCursorLocked(PeerLink link, int dx, int dy, List<Action> actions, ref bool statusChanged)
+    private void MoveControlledCursorLocked(PeerLink link, int dx, int dy, List<Output> outputs, ref bool statusChanged)
     {
-        // Someone may have used this computer's own touchpad meanwhile: follow the real cursor.
+        // Someone may have used this computer's own touchpad meanwhile: follow the real cursor,
+        // unless it is just lagging behind moves we injected ourselves.
         var actual = _platform.GetCursorPosition();
-        if (Math.Abs(actual.X - _tracked.X) > 2 || Math.Abs(actual.Y - _tracked.Y) > 2)
+        if (!IsNear(actual, _tracked) && !IsRecentTarget(actual))
         {
             _tracked = actual;
+            _recentTargetCount = 0;
         }
 
         var proposed = new PointI(_tracked.X + dx, _tracked.Y + dy);
@@ -427,7 +476,7 @@ public sealed class SwitchEngine : IDisposable
         {
             // Back to the controlling computer through the edge facing it.
             link.Send(InputItem.Leave(d.Side, d.Fraction));
-            ReleaseInjectedLocked(actions);
+            ReleaseInjectedLocked(outputs);
             link.KeepAwake = false;
             _state = ControlState.Local;
             _peer = null;
@@ -439,16 +488,43 @@ public sealed class SwitchEngine : IDisposable
         if (next != _tracked)
         {
             _tracked = next;
-            actions.Add(() => _platform.MoveCursorTo(next));
+            MoveCursorLocked(next, outputs);
         }
     }
 
-    private void ReleaseInjectedLocked(List<Action> actions)
+    private void MoveCursorLocked(PointI target, List<Output> outputs)
+    {
+        RememberTarget(target);
+        outputs.Add(Output.Move(target));
+    }
+
+    private void RememberTarget(PointI target)
+    {
+        _recentTargets[_recentTargetNext] = target;
+        _recentTargetNext = (_recentTargetNext + 1) % _recentTargets.Length;
+        _recentTargetCount = Math.Min(_recentTargetCount + 1, _recentTargets.Length);
+    }
+
+    private bool IsRecentTarget(PointI p)
+    {
+        for (var i = 0; i < _recentTargetCount; i++)
+        {
+            if (IsNear(p, _recentTargets[i]))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Within a pixel: absolute injection can round by one.</summary>
+    private static bool IsNear(PointI a, PointI b) => Math.Abs(a.X - b.X) <= 1 && Math.Abs(a.Y - b.Y) <= 1;
+
+    private void ReleaseInjectedLocked(List<Output> outputs)
     {
         foreach (var release in _injected.ReleaseAll())
         {
-            var e = release;
-            actions.Add(() => _platform.Inject(e));
+            outputs.Add(Output.Inject(release));
         }
     }
 
@@ -512,7 +588,7 @@ public sealed class SwitchEngine : IDisposable
     {
         link.InputReceived -= OnInputReceived;
         link.ControlReceived -= OnControlReceived;
-        var actions = new List<Action>();
+        var outputs = RentOutputs();
         lock (_lock)
         {
             if (_peer == link)
@@ -524,16 +600,13 @@ public sealed class SwitchEngine : IDisposable
                 }
                 else if (_state == ControlState.ControlledBy)
                 {
-                    ReleaseInjectedLocked(actions);
+                    ReleaseInjectedLocked(outputs);
                     _state = ControlState.Local;
                     _peer = null;
                 }
             }
         }
-        foreach (var action in actions)
-        {
-            action();
-        }
+        Perform(outputs);
         RefreshActiveSides();
         UpdateMouseHook();
         PeersChanged?.Invoke();
@@ -554,9 +627,10 @@ public sealed class SwitchEngine : IDisposable
             }
 
             var statusChanged = false;
-            var actions = new List<Action>();
+            var outputs = RentOutputs();
             lock (_lock)
             {
+                _router.ExpireStale();
                 if (reason != _gameModeReason)
                 {
                     _gameModeReason = reason;
@@ -572,17 +646,14 @@ public sealed class SwitchEngine : IDisposable
                 else if (_state == ControlState.ControlledBy && _peer is { } controller && controller.SilenceMs > ControllerWatchdogMs * 2)
                 {
                     Log.Warn($"{controller.PeerName} went quiet; releasing held keys");
-                    ReleaseInjectedLocked(actions);
+                    ReleaseInjectedLocked(outputs);
                     controller.KeepAwake = false;
                     _state = ControlState.Local;
                     _peer = null;
                     statusChanged = true;
                 }
             }
-            foreach (var action in actions)
-            {
-                action();
-            }
+            Perform(outputs);
 
             UpdateMouseHook();
             if (statusChanged)
@@ -634,10 +705,9 @@ public sealed class SwitchEngine : IDisposable
 
     private void UpdateMouseHook()
     {
-        bool wanted;
         lock (_lock)
         {
-            wanted = _state == ControlState.Controlling
+            var wanted = _state == ControlState.Controlling
                 || _router.HasPendingForeignReleases
                 || (_state == ControlState.Local && !_paused && _activeSides.Count > 0 && _gameModeReason is null);
             if (wanted == _mouseHookEnabled)
@@ -645,8 +715,10 @@ public sealed class SwitchEngine : IDisposable
                 return;
             }
             _mouseHookEnabled = wanted;
+            // Applied under the lock so concurrent callers can't apply stale decisions out of
+            // order. The platform only posts a message to the hook thread, so this never blocks.
+            _platform.SetMouseHookEnabled(wanted);
         }
-        _platform.SetMouseHookEnabled(wanted);
     }
 
     // ------------------------------------------------------------------ configuration

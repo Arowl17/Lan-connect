@@ -37,12 +37,22 @@ public sealed class UdpEndpoint : IDisposable
 
     public int Port { get; }
 
+    /// <summary>Tests: drop every outgoing datagram (a firewall blocking UDP).</summary>
+    internal volatile bool BlockSends;
+
+    /// <summary>Tests: drop this fraction of outgoing datagrams (bad Wi-Fi).</summary>
+    internal double LossRate;
+
     public void Register(uint sessionId, PeerLink link) => _links[sessionId] = link;
 
     public void Unregister(uint sessionId) => _links.TryRemove(sessionId, out _);
 
-    public void Send(ReadOnlySpan<byte> datagram, EndPoint to)
+    public void Send(ReadOnlySpan<byte> datagram, SocketAddress to)
     {
+        if (BlockSends || (LossRate > 0 && Random.Shared.NextDouble() < LossRate))
+        {
+            return;
+        }
         try
         {
             _socket.SendTo(datagram, SocketFlags.None, to);
@@ -59,13 +69,14 @@ public sealed class UdpEndpoint : IDisposable
     private void ReceiveLoop()
     {
         var buffer = new byte[2048];
-        EndPoint from = new IPEndPoint(IPAddress.Any, 0);
+        // Reused for every packet: no per-packet allocations on the receive path.
+        var from = new SocketAddress(AddressFamily.InterNetwork);
         while (!_disposed)
         {
             int length;
             try
             {
-                length = _socket.ReceiveFrom(buffer, ref from);
+                length = _socket.ReceiveFrom(buffer, SocketFlags.None, from);
             }
             catch (SocketException)
             {
@@ -85,7 +96,7 @@ public sealed class UdpEndpoint : IDisposable
             {
                 try
                 {
-                    link.OnDatagram(buffer.AsSpan(0, length), (IPEndPoint)from, viaUdp: true);
+                    link.OnDatagram(buffer.AsSpan(0, length), from, viaUdp: true);
                 }
                 catch (Exception e)
                 {

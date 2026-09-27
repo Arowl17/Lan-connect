@@ -24,11 +24,14 @@ public enum FrameType : byte
 public sealed class FramedConnection : IAsyncDisposable
 {
     public const int DefaultPort = 47810;
-    private const int MaxFrameSize = 4 * 1024 * 1024;
+    /// <summary>Control messages are tiny; this also bounds what an unauthenticated peer can make us allocate.</summary>
+    private const int MaxFrameSize = 1024 * 1024;
 
     private readonly TcpClient _tcp;
     private readonly SslStream _ssl;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly byte[] _header = new byte[4]; // frames are read by one reader at a time
+    private readonly byte[] _type = new byte[1];
     private int _disposed;
 
     private FramedConnection(TcpClient tcp, SslStream ssl, bool isInitiator)
@@ -58,7 +61,7 @@ public sealed class FramedConnection : IAsyncDisposable
             await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
             {
                 TargetHost = "lan-connect",
-                ClientCertificateContext = SslStreamCertificateContext.Create(identity.Certificate, null, offline: true),
+                ClientCertificateContext = identity.TlsContext,
                 // Self-signed by design: trust is established by pinning fingerprints, checked by the caller.
                 RemoteCertificateValidationCallback = static (_, certificate, _, _) => certificate is not null,
                 CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
@@ -83,7 +86,7 @@ public sealed class FramedConnection : IAsyncDisposable
         {
             await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
             {
-                ServerCertificateContext = SslStreamCertificateContext.Create(identity.Certificate, null, offline: true),
+                ServerCertificateContext = identity.TlsContext,
                 ClientCertificateRequired = true,
                 RemoteCertificateValidationCallback = static (_, certificate, _, _) => certificate is not null,
                 CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
@@ -134,22 +137,25 @@ public sealed class FramedConnection : IAsyncDisposable
     /// <summary>Reads the next frame; returns null when the connection closed cleanly.</summary>
     public async Task<(FrameType Type, byte[] Payload)?> ReceiveFrameAsync(CancellationToken cancellationToken)
     {
-        var header = new byte[4];
-        if (!await ReadExactlyOrEndAsync(header, cancellationToken).ConfigureAwait(false))
+        if (!await ReadExactlyOrEndAsync(_header, cancellationToken).ConfigureAwait(false))
         {
             return null;
         }
-        var length = BinaryPrimitives.ReadUInt32BigEndian(header);
+        var length = BinaryPrimitives.ReadUInt32BigEndian(_header);
         if (length is 0 or > MaxFrameSize + 1)
         {
             throw new InvalidDataException($"Invalid frame length {length}.");
         }
-        var body = new byte[length];
-        if (!await ReadExactlyOrEndAsync(body, cancellationToken).ConfigureAwait(false))
+        if (!await ReadExactlyOrEndAsync(_type, cancellationToken).ConfigureAwait(false))
         {
-            return null;
+            throw new EndOfStreamException();
         }
-        return ((FrameType)body[0], body[1..]);
+        var payload = new byte[length - 1];
+        if (payload.Length > 0 && !await ReadExactlyOrEndAsync(payload, cancellationToken).ConfigureAwait(false))
+        {
+            throw new EndOfStreamException();
+        }
+        return ((FrameType)_type[0], payload);
     }
 
     /// <summary>Reads frames until the next control message (tunnelled input is returned via <paramref name="onTunnel"/>).</summary>

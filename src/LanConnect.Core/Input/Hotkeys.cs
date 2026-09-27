@@ -108,6 +108,18 @@ public sealed class SwitchHotkeyDetector
         return side;
     }
 
+    /// <summary>
+    /// Re-checks the remembered modifiers against the real key state (a missed release would
+    /// otherwise turn Alt+Right into Ctrl+Alt+Right). Returns whether the chord still matches.
+    /// Only meaningful while keys reach this computer: keys swallowed by the hook never show
+    /// up in Windows' key state.
+    /// </summary>
+    public bool ConfirmModifiers(Func<ushort, bool> isDown)
+    {
+        _heldModifierKeys.RemoveWhere(vk => !isDown(vk));
+        return Modifiers != HotkeyModifiers.None && CurrentModifiers == Modifiers;
+    }
+
     public void Reset()
     {
         _heldModifierKeys.Clear();

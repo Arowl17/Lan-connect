@@ -21,6 +21,9 @@ public interface IPlatform
     /// <summary>Injects a key, mouse button or wheel event.</summary>
     void Inject(in InputEvent e);
 
+    /// <summary>Whether Windows currently considers a virtual key (or mouse button) pressed.</summary>
+    bool IsVirtualKeyDown(ushort virtualKey);
+
     /// <summary>Installs or removes the low-level mouse hook. Removed while gaming for zero overhead.</summary>
     void SetMouseHookEnabled(bool enabled);
 

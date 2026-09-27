@@ -17,6 +17,7 @@ public sealed class DiscoveryService : IDisposable
     public const int DefaultPort = 47811;
     private static readonly TimeSpan AnnounceInterval = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ExpireAfter = TimeSpan.FromSeconds(12);
+    private const int MaxDevices = 64;
 
     private readonly string _deviceId;
     private readonly Func<string> _deviceName;
@@ -129,6 +130,14 @@ public sealed class DiscoveryService : IDisposable
                 continue;
             }
             var from = (IPEndPoint)result.RemoteEndPoint;
+            if (!_devices.ContainsKey(beacon.Id) && _devices.Count >= MaxDevices)
+            {
+                PruneExpired();
+                if (_devices.Count >= MaxDevices)
+                {
+                    continue; // someone is flooding the network with fake beacons
+                }
+            }
             var device = new DiscoveredDevice(beacon.Id, beacon.Name, from.Address, beacon.Port, DateTime.UtcNow);
             _devices[beacon.Id] = device;
             DeviceSeen?.Invoke(device);
@@ -146,19 +155,31 @@ public sealed class DiscoveryService : IDisposable
         }
     }
 
+    private void PruneExpired()
+    {
+        var cutoff = DateTime.UtcNow - ExpireAfter;
+        foreach (var (id, device) in _devices)
+        {
+            if (device.LastSeenUtc < cutoff)
+            {
+                _devices.TryRemove(id, out _);
+            }
+        }
+    }
+
     private byte[] Encode(bool query) => JsonSerializer.SerializeToUtf8Bytes(new Beacon("lan-connect", 1, _deviceId, _deviceName(), _tcpPort, query));
 
-    private static bool TryDecode(ReadOnlySpan<byte> data, out Beacon beacon)
+    internal static bool TryDecode(ReadOnlySpan<byte> data, out Beacon beacon)
     {
         beacon = default!;
         try
         {
             var decoded = JsonSerializer.Deserialize<Beacon>(data);
-            if (decoded is null || decoded.App != "lan-connect" || string.IsNullOrEmpty(decoded.Id) || decoded.Port is <= 0 or > 65535)
+            if (decoded is null || decoded.App != "lan-connect" || !IsValidId(decoded.Id) || decoded.Port is <= 0 or > 65535)
             {
                 return false;
             }
-            beacon = decoded with { Name = decoded.Name.Length > 64 ? decoded.Name[..64] : decoded.Name };
+            beacon = decoded with { Name = DeviceNames.Sanitize(decoded.Name) };
             return true;
         }
         catch (JsonException)
@@ -208,5 +229,11 @@ public sealed class DiscoveryService : IDisposable
         _cts.Dispose();
     }
 
-    private sealed record Beacon(string App, int V, string Id, string Name, int Port, bool Query);
+    /// <summary>Device ids are SHA-256 fingerprints: 64 lowercase hex characters.</summary>
+    internal static bool IsValidId(string? id) =>
+        id is { Length: 64 } && id.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    internal static byte[] EncodeBeacon(Beacon beacon) => JsonSerializer.SerializeToUtf8Bytes(beacon);
+
+    internal sealed record Beacon(string App, int V, string Id, string Name, int Port, bool Query);
 }

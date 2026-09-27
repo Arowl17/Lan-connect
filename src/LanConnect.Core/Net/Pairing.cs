@@ -24,7 +24,7 @@ public sealed class PairingSession
     {
         _connection = connection;
         PeerId = connection.PeerFingerprint;
-        PeerName = peerName;
+        PeerName = DeviceNames.Sanitize(peerName);
         Code = code;
         IsInitiator = isInitiator;
     }

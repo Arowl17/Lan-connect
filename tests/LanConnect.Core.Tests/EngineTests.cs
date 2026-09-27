@@ -35,9 +35,34 @@ internal sealed class FakePlatform(DesktopLayout layout) : IPlatform
 
     public ForegroundState GetForegroundState() => Foreground;
 
-    public void MoveCursorTo(PointI position) => Cursor = position;
+    /// <summary>Simulates Windows applying injected moves late: the cursor reads one move behind.</summary>
+    public bool LagMoves { get; set; }
+
+    public PointI? LastMoveTarget { get; private set; }
+
+    private PointI? _laggedMove;
+
+    public void MoveCursorTo(PointI position)
+    {
+        LastMoveTarget = position;
+        if (!LagMoves)
+        {
+            Cursor = position;
+            return;
+        }
+        if (_laggedMove is { } previous)
+        {
+            Cursor = previous;
+        }
+        _laggedMove = position;
+    }
 
     public void Inject(in InputEvent e) => Injected.Enqueue(e);
+
+    /// <summary>Real key state as Windows would report it (default: trust the hooks).</summary>
+    public Func<ushort, bool> KeyDown { get; set; } = _ => true;
+
+    public bool IsVirtualKeyDown(ushort virtualKey) => KeyDown(virtualKey);
 
     public void SetMouseHookEnabled(bool enabled) => MouseHookEnabled = enabled;
 
@@ -110,7 +135,7 @@ public class EngineTests
     private static DesktopLayout LaptopLayout() => new([RectI.FromSize(0, 0, 1920, 1200)]);
 
     /// <summary>Gaming PC (2 monitors) with the work laptop to its right, paired and connected.</summary>
-    private static async Task<(TestComputer Pc, TestComputer Laptop)> SetUpAsync()
+    internal static async Task<(TestComputer Pc, TestComputer Laptop)> SetUpAsync()
     {
         var pc = new TestComputer("Gaming PC", PcLayout());
         var laptop = new TestComputer("Work Laptop", LaptopLayout());
@@ -121,7 +146,7 @@ public class EngineTests
         return (pc, laptop);
     }
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
+    internal static async Task WaitUntilAsync(Func<bool> condition)
     {
         using var cts = new CancellationTokenSource(Timeout);
         while (!condition())

@@ -21,13 +21,25 @@ public enum InputRoute
 /// <item>Keys pressed while controlling the remote are released on the remote when control comes
 /// back, and their late physical releases are swallowed locally.</item>
 /// </list>
+/// Hooks can miss events (e.g. the mouse hook is removed while a game has focus), so the
+/// remembered state is never trusted blindly: local state is re-checked against Windows, and
+/// swallowed keys expire when auto-repeat shows they are no longer held.
 /// </summary>
 public sealed class CaptureRouter
 {
-    private readonly HashSet<KeyId> _localHeldKeys = new();
+    /// <summary>Held keys auto-repeat at least every second (Windows' longest repeat delay).</summary>
+    private const long KeyHeldTimeoutMs = 1200;
+
+    /// <summary>Mouse buttons don't auto-repeat; give up on a missed release after this long.</summary>
+    private const long ButtonHeldTimeoutMs = 15_000;
+
+    private readonly Dictionary<KeyId, ushort> _localHeldKeys = new();
     private readonly HashSet<MouseButton> _localHeldButtons = new();
-    private readonly HashSet<KeyId> _foreignKeys = new();
-    private readonly HashSet<MouseButton> _foreignButtons = new();
+    private readonly Dictionary<KeyId, long> _foreignKeys = new();
+    private readonly Dictionary<MouseButton, long> _foreignButtons = new();
+
+    /// <summary>Monotonic milliseconds; replaceable for tests.</summary>
+    public Func<long> Clock { get; set; } = () => Environment.TickCount64;
 
     /// <summary>What the remote computer currently has pressed because of us.</summary>
     public PressedInputTracker RemotePressed { get; } = new();
@@ -43,7 +55,15 @@ public sealed class CaptureRouter
 
     public bool AnyLocalButtonHeld => _localHeldButtons.Count > 0;
 
-    public void BeginCapture() => Capturing = true;
+    /// <summary>Starts forwarding. <paramref name="isDown"/> checks a virtual key's real state.</summary>
+    public void BeginCapture(Func<ushort, bool>? isDown = null)
+    {
+        if (isDown is not null)
+        {
+            PruneLocal(isDown);
+        }
+        Capturing = true;
+    }
 
     /// <summary>Stops forwarding. Returns the releases the remote needs so nothing stays held there.</summary>
     public List<InputEvent> EndCapture()
@@ -52,17 +72,74 @@ public sealed class CaptureRouter
         return RemotePressed.ReleaseAll();
     }
 
+    /// <summary>Forgets locally held keys/buttons that Windows says are not actually down.</summary>
+    public void PruneLocal(Func<ushort, bool> isDown)
+    {
+        List<KeyId>? staleKeys = null;
+        foreach (var (id, vk) in _localHeldKeys)
+        {
+            if (vk != 0 && !isDown(vk))
+            {
+                (staleKeys ??= new()).Add(id);
+            }
+        }
+        if (staleKeys is not null)
+        {
+            foreach (var id in staleKeys)
+            {
+                _localHeldKeys.Remove(id);
+            }
+        }
+        _localHeldButtons.RemoveWhere(b => !isDown(ButtonVirtualKey(b)));
+    }
+
+    /// <summary>Drops swallowed keys/buttons whose release was evidently missed.</summary>
+    public void ExpireStale()
+    {
+        var now = Clock();
+        List<KeyId>? keys = null;
+        foreach (var (id, last) in _foreignKeys)
+        {
+            if (now - last > KeyHeldTimeoutMs && !RemotePressed.IsPressed(id))
+            {
+                (keys ??= new()).Add(id);
+            }
+        }
+        if (keys is not null)
+        {
+            foreach (var id in keys)
+            {
+                _foreignKeys.Remove(id);
+            }
+        }
+        List<MouseButton>? buttons = null;
+        foreach (var (button, last) in _foreignButtons)
+        {
+            if (now - last > ButtonHeldTimeoutMs && !RemotePressed.IsPressed(button))
+            {
+                (buttons ??= new()).Add(button);
+            }
+        }
+        if (buttons is not null)
+        {
+            foreach (var button in buttons)
+            {
+                _foreignButtons.Remove(button);
+            }
+        }
+    }
+
     /// <summary>Marks a key press as consumed (e.g. the hotkey) so its release is swallowed too.</summary>
     public void SwallowUntilReleased(in InputEvent e)
     {
         if (e.Kind == InputEventKind.Key)
         {
-            _foreignKeys.Add(e.KeyId);
+            _foreignKeys[e.KeyId] = Clock();
             _localHeldKeys.Remove(e.KeyId);
         }
         else if (e.Kind == InputEventKind.MouseButton)
         {
-            _foreignButtons.Add(e.Button);
+            _foreignButtons[e.Button] = Clock();
             _localHeldButtons.Remove(e.Button);
         }
     }
@@ -78,7 +155,7 @@ public sealed class CaptureRouter
     {
         var id = e.KeyId;
 
-        if (_localHeldKeys.Contains(id))
+        if (_localHeldKeys.ContainsKey(id))
         {
             // Pressed locally before capture started (or while not capturing): stays local.
             if (!e.Down)
@@ -88,39 +165,57 @@ public sealed class CaptureRouter
             return InputRoute.Local;
         }
 
-        if (_foreignKeys.Contains(id))
+        if (_foreignKeys.TryGetValue(id, out var lastEvent))
         {
+            var now = Clock();
             if (Capturing && RemotePressed.IsPressed(id))
             {
                 // Auto-repeat or release of a key held on the remote.
                 RemotePressed.Observe(e);
-                if (!e.Down)
+                if (e.Down)
+                {
+                    _foreignKeys[id] = now;
+                }
+                else
                 {
                     _foreignKeys.Remove(id);
                 }
                 return InputRoute.Remote;
             }
 
-            // Press went elsewhere (hotkey, or the remote was already released): swallow the rest.
-            if (!e.Down)
+            if (e.Down && now - lastEvent > KeyHeldTimeoutMs)
             {
+                // Too long since the last auto-repeat: its release was missed and this is a
+                // fresh press. Route it normally.
                 _foreignKeys.Remove(id);
             }
-            return InputRoute.Swallow;
+            else
+            {
+                // Press went elsewhere (hotkey, or the remote was already released): swallow the rest.
+                if (e.Down)
+                {
+                    _foreignKeys[id] = now;
+                }
+                else
+                {
+                    _foreignKeys.Remove(id);
+                }
+                return InputRoute.Swallow;
+            }
         }
 
         if (!Capturing)
         {
             if (e.Down)
             {
-                _localHeldKeys.Add(id);
+                _localHeldKeys[id] = e.VirtualKey;
             }
             return InputRoute.Local;
         }
 
         if (e.Down)
         {
-            _foreignKeys.Add(id);
+            _foreignKeys[id] = Clock();
             RemotePressed.Observe(e);
             return InputRoute.Remote;
         }
@@ -143,7 +238,7 @@ public sealed class CaptureRouter
             return InputRoute.Local;
         }
 
-        if (_foreignButtons.Contains(button))
+        if (_foreignButtons.ContainsKey(button))
         {
             if (Capturing && RemotePressed.IsPressed(button))
             {
@@ -155,11 +250,13 @@ public sealed class CaptureRouter
                 return InputRoute.Remote;
             }
 
+            _foreignButtons.Remove(button);
             if (!e.Down)
             {
-                _foreignButtons.Remove(button);
+                return InputRoute.Swallow; // the late release of a press that went elsewhere
             }
-            return InputRoute.Swallow;
+            // Buttons don't auto-repeat, so a second press means the release was missed:
+            // treat it as a fresh press below.
         }
 
         if (!Capturing)
@@ -173,9 +270,19 @@ public sealed class CaptureRouter
 
         if (e.Down)
         {
-            _foreignButtons.Add(button);
+            _foreignButtons[button] = Clock();
             RemotePressed.Observe(e);
         }
         return InputRoute.Remote;
     }
+
+    /// <summary>Windows virtual-key code of a mouse button (for GetAsyncKeyState).</summary>
+    public static ushort ButtonVirtualKey(MouseButton button) => button switch
+    {
+        MouseButton.Left => 0x01,
+        MouseButton.Right => 0x02,
+        MouseButton.Middle => 0x04,
+        MouseButton.X1 => 0x05,
+        _ => 0x06,
+    };
 }

@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -38,7 +39,7 @@ public static class PairingCode
         hash.AppendData(initiatorNonce);
         hash.AppendData(responderNonce);
         var value = BinaryPrimitives.ReadUInt32BigEndian(hash.GetHashAndReset()) % 1_000_000;
-        return value.ToString("D6");
+        return value.ToString("D6", CultureInfo.InvariantCulture);
     }
 
     /// <summary>"482913" → "482 913" for display.</summary>

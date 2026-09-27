@@ -262,3 +262,56 @@ public class PairingCodeTests
         Assert.False(PairingCode.VerifyCommitment(commitment, PairingCode.NewNonce()));
     }
 }
+
+public class PacketFuzzTests
+{
+    [Fact]
+    public void RandomBytesNeverThrow()
+    {
+        var random = new Random(1234);
+        var buffer = new byte[600];
+        for (var i = 0; i < 20_000; i++)
+        {
+            var length = random.Next(0, buffer.Length);
+            random.NextBytes(buffer.AsSpan(0, length));
+            InputPacket.TryDecode(buffer.AsSpan(0, length), out _);
+        }
+    }
+
+    [Fact]
+    public void MutatedValidPacketsNeverThrow()
+    {
+        var packet = new InputPacket { Ack = 9, Motion = new MotionStamp(1, 2, 3), Ping = 5 };
+        packet.Items.Add(new SequencedItem(1, default, InputItem.FromEvent(InputEvent.KeyEvent(1, 2, false, true))));
+        packet.Items.Add(new SequencedItem(2, default, InputItem.Enter(Layout.Side.Right, 0.3)));
+        var buffer = new byte[512];
+        var length = packet.Encode(buffer);
+        var random = new Random(99);
+        for (var i = 0; i < 20_000; i++)
+        {
+            var copy = buffer[..length];
+            copy[random.Next(length)] = (byte)random.Next(256);
+            InputPacket.TryDecode(copy, out _);
+        }
+    }
+
+    [Fact]
+    public void DecodingIntoAReusedPacketClearsOldContent()
+    {
+        var first = new InputPacket { Ack = 1, Motion = new MotionStamp(1, 1, 1), Ping = 7 };
+        first.Items.Add(new SequencedItem(1, default, InputItem.TakeBack()));
+        var second = new InputPacket { Ack = 2 };
+        var a = new byte[256];
+        var b = new byte[256];
+        var la = first.Encode(a);
+        var lb = second.Encode(b);
+
+        var reused = new InputPacket();
+        Assert.True(InputPacket.TryDecodeInto(a.AsSpan(0, la), reused));
+        Assert.True(InputPacket.TryDecodeInto(b.AsSpan(0, lb), reused));
+        Assert.Equal(2u, reused.Ack);
+        Assert.Null(reused.Motion);
+        Assert.Null(reused.Ping);
+        Assert.Empty(reused.Items);
+    }
+}

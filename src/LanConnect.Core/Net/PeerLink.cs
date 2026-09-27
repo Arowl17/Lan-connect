@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Sockets;
 
 namespace LanConnect.Core.Net;
 
@@ -25,6 +26,7 @@ public sealed class PeerLink : IAsyncDisposable
     private readonly InputStreamSender _sender = new();
     private readonly InputStreamReceiver _receiver = new();
     private readonly InputPacket _packet = new();
+    private readonly InputPacket _rxPacket = new();
     private readonly List<ReceivedInput> _received = new();
     private readonly AutoResetEvent _wake = new(false);
     private readonly CancellationTokenSource _cts = new();
@@ -35,6 +37,7 @@ public sealed class PeerLink : IAsyncDisposable
     private readonly byte[] _openBuffer = new byte[2048];
     private DatagramCrypto? _txCrypto;
     private IPEndPoint _peerUdp;
+    private SocketAddress _peerUdpAddress;
     private Thread? _senderThread;
     private long _lastSendMs;
     private long _lastPingMs;
@@ -46,15 +49,17 @@ public sealed class PeerLink : IAsyncDisposable
     private bool _itemsPending;
     private bool _cryptoDisposed;
     private int _closed;
+    private int _wakeRequested;
 
     public PeerLink(FramedConnection connection, HelloMessage peerHello, UdpEndpoint udp)
     {
         _connection = connection;
         _udp = udp;
         PeerId = connection.PeerFingerprint;
-        PeerName = peerHello.DeviceName;
-        PeerAppVersion = peerHello.AppVersion;
+        PeerName = DeviceNames.Sanitize(peerHello.DeviceName);
+        PeerAppVersion = peerHello.AppVersion is { Length: <= 32 } version ? version : "?";
         _peerUdp = new IPEndPoint(connection.RemoteEndPoint.Address, peerHello.UdpPort);
+        _peerUdpAddress = _peerUdp.Serialize();
         _rxCrypto = new DatagramCrypto(DatagramCrypto.NewSessionId(), _rxKey);
         _lastReceiveMs = _lastControlReceiveMs = NowMs;
     }
@@ -83,14 +88,20 @@ public sealed class PeerLink : IAsyncDisposable
     /// </summary>
     public bool KeepAwake { get; set; }
 
-    /// <summary>Raised on the network thread with input to apply, in order.</summary>
+    /// <summary>
+    /// Raised on the network thread with input to apply, in order. The list is reused: it is
+    /// only valid during the callback.
+    /// </summary>
     public event Action<PeerLink, IReadOnlyList<ReceivedInput>>? InputReceived;
 
     public event Action<PeerLink, ControlMessage>? ControlReceived;
 
     public event Action<PeerLink>? Closed;
 
-    public static long NowMs => Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency;
+    private static readonly long TicksPerMs = Math.Max(1, Stopwatch.Frequency / 1000);
+
+    /// <summary>Monotonic milliseconds (overflow-free for the lifetime of the machine).</summary>
+    public static long NowMs => Stopwatch.GetTimestamp() / TicksPerMs;
 
     /// <summary>Runs until the connection ends. Hello messages must already have been exchanged.</summary>
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -129,7 +140,7 @@ public sealed class PeerLink : IAsyncDisposable
             _sender.Enqueue(item);
             _itemsPending = true;
         }
-        _wake.Set();
+        Wake();
     }
 
     public void AddMotion(int dx, int dy)
@@ -138,12 +149,21 @@ public sealed class PeerLink : IAsyncDisposable
         {
             _sender.AddMotion(dx, dy);
         }
-        _wake.Set();
+        Wake();
+    }
+
+    /// <summary>Signals the sender thread; skips the kernel call when a wake-up is already pending.</summary>
+    private void Wake()
+    {
+        if (Interlocked.Exchange(ref _wakeRequested, 1) == 0)
+        {
+            _wake.Set();
+        }
     }
 
     public Task SendControlAsync(ControlMessage message) => _connection.SendAsync(message, _cts.Token);
 
-    internal void OnDatagram(ReadOnlySpan<byte> datagram, IPEndPoint? from, bool viaUdp)
+    internal void OnDatagram(ReadOnlySpan<byte> datagram, SocketAddress? from, bool viaUdp)
     {
         // UDP and the TLS fallback deliver on different threads; keep deliveries in order.
         lock (_deliveryLock)
@@ -152,14 +172,15 @@ public sealed class PeerLink : IAsyncDisposable
         }
     }
 
-    private void OnDatagramCore(ReadOnlySpan<byte> datagram, IPEndPoint? from, bool viaUdp)
+    private void OnDatagramCore(ReadOnlySpan<byte> datagram, SocketAddress? from, bool viaUdp)
     {
-        List<ReceivedInput>? toDeliver = null;
+        var deliver = false;
         lock (_lock)
         {
+            var packet = _rxPacket;
             if (_cryptoDisposed ||
                 !_rxCrypto.TryOpen(datagram, _openBuffer, out var length) ||
-                !InputPacket.TryDecode(_openBuffer.AsSpan(0, length), out var packet))
+                !InputPacket.TryDecodeInto(_openBuffer.AsSpan(0, length), packet))
             {
                 return;
             }
@@ -169,9 +190,13 @@ public sealed class PeerLink : IAsyncDisposable
             if (viaUdp)
             {
                 _lastUdpReceiveMs = now;
-                if (from is not null && !from.Equals(_peerUdp))
+                if (from is not null && !from.Equals(_peerUdpAddress))
                 {
-                    _peerUdp = from; // follow the peer if its port/address changed
+                    // Follow the peer if its port/address changed (the packet is authenticated).
+                    var copy = new SocketAddress(from.Family, from.Size);
+                    from.Buffer.Span[..from.Size].CopyTo(copy.Buffer.Span);
+                    _peerUdpAddress = copy;
+                    _peerUdp = (IPEndPoint)_peerUdp.Create(copy);
                 }
             }
 
@@ -188,33 +213,26 @@ public sealed class PeerLink : IAsyncDisposable
             if (packet.Items.Count > 0)
             {
                 _ackPending = true;
-                _received.Clear();
-                _receiver.Receive(packet, _received);
-                if (_received.Count > 0)
-                {
-                    toDeliver = [.. _received];
-                }
             }
-            else if (packet.Motion is not null)
+            if (packet.Items.Count > 0 || packet.Motion is not null)
             {
+                // Safe to hand out after unlocking: only this method fills the list, and it runs
+                // under the delivery lock.
                 _received.Clear();
                 _receiver.Receive(packet, _received);
-                if (_received.Count > 0)
-                {
-                    toDeliver = [.. _received];
-                }
+                deliver = _received.Count > 0;
             }
         }
 
         if (_ackPending || _pongToSend is not null)
         {
-            _wake.Set();
+            Wake();
         }
-        if (toDeliver is not null)
+        if (deliver)
         {
             try
             {
-                InputReceived?.Invoke(this, toDeliver);
+                InputReceived?.Invoke(this, _received);
             }
             catch (Exception e)
             {
@@ -250,13 +268,15 @@ public sealed class PeerLink : IAsyncDisposable
                     : IdleKeepAliveIntervalMs;
             }
             _wake.WaitOne(timeout);
+            // Reset before looking at the state, so a producer that adds data from now on wakes us again.
+            Volatile.Write(ref _wakeRequested, 0);
             if (token.IsCancellationRequested)
             {
                 return;
             }
 
             int sealedLength;
-            IPEndPoint destination;
+            SocketAddress destination;
             lock (_lock)
             {
                 var tx = _txCrypto;
@@ -288,7 +308,7 @@ public sealed class PeerLink : IAsyncDisposable
                 _lastSendMs = now;
                 var plainLength = _packet.Encode(_plainBuffer);
                 sealedLength = tx.Seal(_plainBuffer.AsSpan(0, plainLength), _sealBuffer);
-                destination = _peerUdp;
+                destination = _peerUdpAddress;
             }
 
             _udp.Send(_sealBuffer.AsSpan(0, sealedLength), destination);
@@ -334,7 +354,7 @@ public sealed class PeerLink : IAsyncDisposable
                         _txCrypto?.Dispose();
                         _txCrypto = new DatagramCrypto(key.SessionId, key.Key);
                     }
-                    _wake.Set();
+                    Wake();
                     break;
                 case PingMessage ping:
                     await _connection.SendAsync(new PongMessage(ping.Timestamp), token).ConfigureAwait(false);

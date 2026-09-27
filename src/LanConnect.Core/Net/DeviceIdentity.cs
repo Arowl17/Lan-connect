@@ -1,3 +1,4 @@
+using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -9,11 +10,17 @@ namespace LanConnect.Core.Net;
 /// </summary>
 public sealed class DeviceIdentity : IDisposable
 {
+    private SslStreamCertificateContext? _tlsContext;
+
     private DeviceIdentity(X509Certificate2 certificate)
     {
         Certificate = certificate;
         Fingerprint = FingerprintOf(certificate);
     }
+
+    /// <summary>TLS certificate context, built once instead of on every connection.</summary>
+    public SslStreamCertificateContext TlsContext =>
+        _tlsContext ??= SslStreamCertificateContext.Create(Certificate, additionalCertificates: null, offline: true);
 
     public X509Certificate2 Certificate { get; }
 

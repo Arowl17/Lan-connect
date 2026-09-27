@@ -102,3 +102,96 @@ public class HotkeyTests
         Assert.Null(detector.Feed(Key(VirtualKeys.Right, true)));
     }
 }
+
+public class CaptureRouterRecoveryTests
+{
+    private static InputEvent Key(ushort vk, bool down) => InputEvent.KeyEvent((ushort)(vk + 0x100), vk, false, down);
+
+    private static InputEvent Button(MouseButton b, bool down) => InputEvent.MouseButtonEvent(b, down);
+
+    [Fact]
+    public void MissedLocalButtonReleaseIsForgottenWhenWindowsSaysItIsUp()
+    {
+        var router = new CaptureRouter();
+        router.Route(Button(MouseButton.Left, true)); // the hook saw the press, then was removed
+        Assert.True(router.AnyLocalButtonHeld);
+
+        router.BeginCapture(isDown: _ => false);      // Windows: nothing is actually held
+        Assert.False(router.AnyLocalButtonHeld);
+        Assert.Equal(InputRoute.Remote, router.Route(Button(MouseButton.Left, true))); // click goes to the laptop
+    }
+
+    [Fact]
+    public void MissedLocalKeyReleaseIsForgottenAtCapture()
+    {
+        var router = new CaptureRouter();
+        router.Route(Key(0x57, true));                // W pressed, release missed
+        router.BeginCapture(isDown: _ => false);
+        Assert.Equal(InputRoute.Remote, router.Route(Key(0x57, true))); // typing W now reaches the laptop
+    }
+
+    [Fact]
+    public void KeysReallyHeldStayLocalAfterPruning()
+    {
+        var router = new CaptureRouter();
+        router.Route(Key(0x57, true));
+        router.BeginCapture(isDown: vk => vk == 0x57); // W is genuinely still held
+        Assert.Equal(InputRoute.Local, router.Route(Key(0x57, false)));
+    }
+
+    [Fact]
+    public void SwallowedKeyWithMissedReleaseExpires()
+    {
+        long now = 1000;
+        var router = new CaptureRouter { Clock = () => now };
+        router.BeginCapture();
+        router.Route(Key(0x42, true));                // B pressed on the laptop
+        router.EndCapture();
+        Assert.True(router.HasPendingForeignReleases);
+
+        now += 5000;                                  // no auto-repeat for 5 s: B was released unseen
+        Assert.Equal(InputRoute.Local, router.Route(Key(0x42, true))); // a fresh press works locally
+        Assert.Equal(InputRoute.Local, router.Route(Key(0x42, false)));
+    }
+
+    [Fact]
+    public void ExpireStaleClearsPendingReleasesSoTheMouseHookCanBeRemoved()
+    {
+        long now = 0;
+        var router = new CaptureRouter { Clock = () => now };
+        router.BeginCapture();
+        router.Route(Key(0x42, true));
+        router.EndCapture();
+        now += 2000;
+        router.ExpireStale();
+        Assert.False(router.HasPendingForeignReleases);
+    }
+
+    [Fact]
+    public void AutoRepeatKeepsSwallowingAHeldForeignKey()
+    {
+        long now = 0;
+        var router = new CaptureRouter { Clock = () => now };
+        router.BeginCapture();
+        router.Route(Key(0x42, true));
+        router.EndCapture();
+        for (var i = 0; i < 50; i++)
+        {
+            now += 33;                                // ~30 repeats per second
+            Assert.Equal(InputRoute.Swallow, router.Route(Key(0x42, true)));
+        }
+        Assert.Equal(InputRoute.Swallow, router.Route(Key(0x42, false)));
+        Assert.False(router.HasPendingForeignReleases);
+    }
+
+    [Fact]
+    public void SecondPressOfASwallowedButtonIsAFreshPress()
+    {
+        var router = new CaptureRouter();
+        router.BeginCapture();
+        router.Route(Button(MouseButton.Right, true));
+        router.EndCapture();                          // its release was never seen
+        Assert.Equal(InputRoute.Local, router.Route(Button(MouseButton.Right, true)));
+        Assert.Equal(InputRoute.Local, router.Route(Button(MouseButton.Right, false)));
+    }
+}

@@ -264,6 +264,19 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
         return new INPUT { type = INPUT_KEYBOARD, u = new INPUTUNION { ki = ki } };
     }
 
+    /// <summary>
+    /// Injected button events go through the "swap mouse buttons" setting, so a logical left
+    /// click must be injected as a right-button event on a left-handed setup.
+    /// </summary>
+    private static MouseButton LogicalToInjected(MouseButton button)
+    {
+        if (button is MouseButton.Left or MouseButton.Right && GetSystemMetrics(SM_SWAPBUTTON) != 0)
+        {
+            return button == MouseButton.Left ? MouseButton.Right : MouseButton.Left;
+        }
+        return button;
+    }
+
     /// <summary>Keys whose scan codes are ambiguous or special; injecting the virtual key is more reliable.</summary>
     private static bool PreferVirtualKey(ushort vk) => vk switch
     {
@@ -274,7 +287,17 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
         _ => false,
     };
 
-    private static MOUSEINPUT ButtonInput(in InputEvent e) => e.Button switch
+    public bool IsVirtualKeyDown(ushort virtualKey)
+    {
+        // GetAsyncKeyState reports physical mouse buttons; our events use logical buttons.
+        if (virtualKey is 0x01 or 0x02 && GetSystemMetrics(SM_SWAPBUTTON) != 0)
+        {
+            virtualKey ^= 0x03;
+        }
+        return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+    }
+
+    private static MOUSEINPUT ButtonInput(in InputEvent e) => LogicalToInjected(e.Button) switch
     {
         MouseButton.Left => new MOUSEINPUT { dwFlags = e.Down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP },
         MouseButton.Right => new MOUSEINPUT { dwFlags = e.Down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP },
