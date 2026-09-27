@@ -23,15 +23,15 @@ Built to fix the problems of tools like Lan Mouse:
 
 ## Install
 
-1. Download `LanConnect-Setup-x.y.z.exe` from the latest build
-   ([Actions](../../actions) → newest successful run → *Artifacts* → `LanConnect-Setup`)
-   or from [Releases](../../releases).
+1. Download `LanConnect-Setup-x.y.z.exe` from the [latest release](../../releases/latest).
+   (Builds of every change are also under [Actions](../../actions) → newest successful run
+   → *Artifacts*.)
 2. Run it on **both** computers. It installs Lan Connect, adds the Windows Firewall
    rule and starts the app. Windows may show a SmartScreen warning because the app
    isn't code-signed yet; click *More info* → *Run anyway*.
 
-There is also a portable `LanConnect.exe` artifact. It needs no install; the app offers
-to fix the firewall rule on first start.
+There is also a portable `LanConnect-x.y.z-portable.exe`. It needs no install; the app
+offers to fix the firewall rule on first start.
 
 ## Set up (once)
 
@@ -100,6 +100,10 @@ dotnet publish src/LanConnect.App -c Release -r win-x64 --self-contained -p:Publ
 Everything compiles on Linux or macOS too (`EnableWindowsTargeting`), and the core
 tests run on any OS. The installer is built with Inno Setup from `installer/LanConnect.iss`;
 CI (`.github/workflows/build.yml`) does all of this on every push.
+
+To publish a release, push a version tag (`git tag v0.2.0 && git push origin v0.2.0`) or run
+the *Build* workflow manually with a `release_version`. Release notes are taken from
+`docs/releases/v<version>.md`.
 
 ### Project layout
 

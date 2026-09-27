@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Publish a GitHub release with this version (e.g. 0.1.0). Leave empty for a normal build."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -20,6 +25,28 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # A pushed tag "v1.2.3" (or the release_version input) makes a release with that version;
+      # any other build uses the version from Directory.Build.props.
+      - name: Determine version
+        id: version
+        shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_INPUT: ${{ inputs.release_version }}
+        run: |
+          $release = ""
+          if ($env:REF_TYPE -eq "tag" -and $env:REF_NAME -like "v*") {
+            $release = $env:REF_NAME.Substring(1)
+          } elseif ($env:RELEASE_INPUT) {
+            $release = $env:RELEASE_INPUT.Trim().TrimStart("v")
+          }
+          $version = if ($release) { $release } else { (Select-Xml -Path Directory.Build.props -XPath "//Version").Node.InnerText }
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') { throw "Invalid version '$version'" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "release=$(if ($release) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $version (release: $([bool]$release))"
+
       - name: Test
         run: dotnet test tests/LanConnect.Core.Tests -c Release --logger "console;verbosity=normal"
 
@@ -27,17 +54,20 @@ jobs:
         run: >
           dotnet publish src/LanConnect.App/LanConnect.App.csproj -c Release -r win-x64
           --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:EnableCompressionInSingleFile=true -p:PublishReadyToRun=true -p:DebugType=none -o publish
+          -p:EnableCompressionInSingleFile=true -p:PublishReadyToRun=true -p:DebugType=none
+          -p:Version=${{ steps.version.outputs.version }} -o publish
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
       - name: Build installer
         shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $version = (Select-Xml -Path Directory.Build.props -XPath "//Version").Node.InnerText
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DPublishDir=$PWD\publish" installer\LanConnect.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" "/DPublishDir=$PWD\publish" installer\LanConnect.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item publish\LanConnect.exe "publish\LanConnect-$env:VERSION-portable.exe"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -49,10 +79,32 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LanConnect-portable
-          path: publish/LanConnect.exe
+          path: publish/LanConnect-*-portable.exe
 
-      - name: Publish release (version tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Release notes
+        id: notes
+        if: steps.version.outputs.release == 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $path = "docs/releases/v$env:VERSION.md"
+          if (-not (Test-Path $path)) {
+            $path = "release-notes.md"
+            "Lan Connect $env:VERSION. Install ``LanConnect-Setup-$env:VERSION.exe`` on every computer; see the README for setup." | Set-Content $path
+          }
+          "path=$path" >> $env:GITHUB_OUTPUT
+
+      - name: Publish release
+        if: steps.version.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          files: installer/Output/*.exe
+          tag_name: v${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Lan Connect ${{ steps.version.outputs.version }}
+          body_path: ${{ steps.notes.outputs.path }}
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            installer/Output/*.exe
+            publish/LanConnect-*-portable.exe
