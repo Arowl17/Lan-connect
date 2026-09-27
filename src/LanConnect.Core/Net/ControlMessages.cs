@@ -37,8 +37,11 @@ public sealed record PairDecisionMessage(bool Accepted) : ControlMessage;
 /// <summary>"When you send input to me over UDP, use this session id and key."</summary>
 public sealed record SessionKeyMessage(uint SessionId, byte[] Key) : ControlMessage;
 
-/// <summary>"You are on my <paramref name="YouAreOnMy"/> side" (null = not placed).</summary>
-public sealed record PlacementMessage(Side? YouAreOnMy) : ControlMessage;
+/// <summary>
+/// "You are on my <paramref name="YouAreOnMy"/> side" (null = not placed). <paramref name="Explicit"/>
+/// is true when the user just changed it; otherwise it is only adopted if the receiver has none.
+/// </summary>
+public sealed record PlacementMessage(Side? YouAreOnMy, bool Explicit) : ControlMessage;
 
 public sealed record PingMessage(long Timestamp) : ControlMessage;
 
