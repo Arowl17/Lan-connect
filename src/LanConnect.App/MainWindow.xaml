@@ -130,6 +130,31 @@
                 </StackPanel>
             </Border>
 
+            <!-- Clipboard -->
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <TextBlock Text="Clipboard" Style="{StaticResource CardTitle}" />
+                    <TextBlock Style="{StaticResource Hint}">
+                        Copy on one computer, move the mouse over, paste on the other. Works for text, images and files
+                        in both directions. Received files are kept until you copy something else.
+                    </TextBlock>
+                    <CheckBox x:Name="ClipboardEnabled" Content="Bring the clipboard along when switching computers" FontWeight="SemiBold" Margin="0,10,0,0" Click="OnClipboardChanged" />
+                    <StackPanel x:Name="ClipboardOptionsPanel" Margin="24,0,0,0">
+                        <CheckBox x:Name="ClipboardFiles" Content="Include copied files and folders" Click="OnClipboardChanged" />
+                        <DockPanel Margin="0,10,0,0">
+                            <TextBlock Text="Largest file transfer" Width="170" VerticalAlignment="Center" />
+                            <ComboBox x:Name="ClipboardLimit" Width="140" HorizontalAlignment="Left" SelectionChanged="OnClipboardLimitChanged">
+                                <ComboBoxItem Content="100 MB" Tag="100" />
+                                <ComboBoxItem Content="500 MB" Tag="500" />
+                                <ComboBoxItem Content="1 GB" Tag="1024" />
+                                <ComboBoxItem Content="4 GB" Tag="4096" />
+                                <ComboBoxItem Content="16 GB" Tag="16384" />
+                            </ComboBox>
+                        </DockPanel>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
             <!-- Game mode -->
             <Border Style="{StaticResource Card}">
                 <StackPanel>

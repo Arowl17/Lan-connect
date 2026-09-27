@@ -17,6 +17,8 @@ Built to fix the problems of tools like Lan Mouse:
   loses movement. Keys and clicks are re-sent until confirmed and land exactly where
   the cursor was. Packets keep flowing every 30 ms while active, which stops Wi-Fi
   power-saving from adding lag spikes.
+- **Shared clipboard.** Copy on one computer, move over, paste on the other: text,
+  formatted text, images and whole files and folders, in both directions.
 - **Easy and secure setup.** Computers find each other automatically. Pairing shows the
   same 6-digit code on both screens, like Bluetooth. After that, only paired computers can
   connect, both verify each other, and everything is encrypted (TLS + AES-256-GCM).
@@ -50,6 +52,7 @@ That's it. Both computers reconnect by themselves from now on, even after restar
 | Move to the other computer | Push the mouse past the screen edge that faces it |
 | Switch without the mouse (works in games) | **Ctrl + Alt + arrow** pointing at the other computer |
 | Come back | Push the mouse back across the edge, or **Ctrl + Alt + arrow** pointing home |
+| Copy and paste between computers | Copy as usual, move to the other computer, paste. Files work too (Ctrl + C in File Explorer, Ctrl + V on the other side) |
 | Pause everything | Tray icon → *Pause Lan Connect* |
 | Turn game mode off or on | Tray icon → *Game mode* |
 
@@ -65,6 +68,7 @@ Left-click the tray icon to open settings:
 
 - **Your computers**: connection status and latency, placement, *Forget*.
 - **Switching**: hotkey modifiers, edge resistance (how far to push), dead-corner size.
+- **Clipboard**: turn sharing on or off, include files or not, and the largest file transfer.
 - **Game mode**: which signals count as "in a game", and a list of apps (`game.exe`) or
   window-title words (`GeForce NOW`) where the edges never switch.
 - **General**: this computer's name, start with Windows, visibility, pairing requests.
@@ -127,6 +131,10 @@ the *Build* workflow manually with a `release_version`. Release notes are taken 
 - The controlling computer swallows its local input with low-level hooks and forwards
   it. The controlled computer injects it with `SendInput`, tracks the cursor itself and
   sends control back when the cursor pushes through the edge facing the controller.
+- The clipboard moves with control: the computer losing control sends its clipboard (only
+  if something new was copied) over the encrypted TLS connection in 256 KB chunks. The
+  receiver checks sizes and file names, and only ever writes received files inside
+  `%LOCALAPPDATA%\LanConnect\Clipboard`, deleting them once they're off the clipboard.
 - Only one computer (the one with the smaller id) dials right away; the other waits a
   few seconds first, so the two never build duplicate connections that would drop a
   switch in progress.
@@ -139,6 +147,5 @@ the *Build* workflow manually with a `release_version`. Release notes are taken 
 
 ## Roadmap
 
-- Phase 2: clipboard sharing (text, images, then files).
 - Phase 3: visual layout editor per monitor, 3+ computers, drag-and-drop files, shared lock screen.
 - Later: control of admin prompts and the sign-in screen (Windows service).

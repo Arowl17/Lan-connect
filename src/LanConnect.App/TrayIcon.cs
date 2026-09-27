@@ -2,6 +2,7 @@ using System.Drawing;
 using System.IO;
 using System.Windows;
 using System.Windows.Forms;
+using LanConnect.Core.Clipboard;
 using LanConnect.Core.Engine;
 using LanConnect.Core.Input;
 using LanConnect.Core.Layout;
@@ -44,8 +45,29 @@ internal sealed class TrayIcon : IDisposable
 
         services.Engine.StatusChanged += _ => Refresh();
         services.Engine.PeersChanged += Refresh;
+        services.ClipboardSync.TransferEvent += OnClipboardTransfer;
         Refresh();
     }
+
+    /// <summary>Only file copies and big transfers get a notification; text just works silently.</summary>
+    private void OnClipboardTransfer(ClipboardTransferEvent e) => Application.Current?.Dispatcher.BeginInvoke(() =>
+    {
+        var (title, text, icon) = e.Kind switch
+        {
+            ClipboardTransferKind.Receiving => ("Receiving clipboard", $"Copying {Size(e.TotalBytes)} from {e.PeerName}…", ToolTipIcon.Info),
+            ClipboardTransferKind.Received when e.FileCount > 0 => ("Ready to paste", $"{Plural(e.FileCount, "file")} from {e.PeerName} can be pasted now.", ToolTipIcon.Info),
+            ClipboardTransferKind.Received => ("Ready to paste", $"The clipboard from {e.PeerName} can be pasted now.", ToolTipIcon.Info),
+            ClipboardTransferKind.TooLarge => ("Files not shared", $"The copied files are over the {e.Detail} limit, so they weren't sent to {e.PeerName}. You can raise it in Settings.", ToolTipIcon.Warning),
+            _ => ("Clipboard not shared", $"Couldn't share the clipboard with {e.PeerName}: {e.Detail}", ToolTipIcon.Warning),
+        };
+        _icon.ShowBalloonTip(4000, title, text, icon);
+    });
+
+    private static string Plural(int count, string noun) => count == 1 ? $"1 {noun}" : $"{count} {noun}s";
+
+    private static string Size(long bytes) => bytes >= 1024L * 1024 * 1024
+        ? $"{bytes / (1024.0 * 1024 * 1024):0.#} GB"
+        : $"{Math.Max(1, bytes / (1024.0 * 1024)):0} MB";
 
     private void Refresh() => Application.Current?.Dispatcher.BeginInvoke(() =>
     {

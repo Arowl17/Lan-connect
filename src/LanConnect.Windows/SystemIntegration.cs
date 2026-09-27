@@ -16,6 +16,10 @@ public static class AppPaths
     public static string LogDirectory { get; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LanConnect", "logs");
 
+    /// <summary>%LOCALAPPDATA%\LanConnect\Clipboard: files received from the other computer, until replaced.</summary>
+    public static string ClipboardDirectory { get; } =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LanConnect", "Clipboard");
+
     public static string SettingsFile => Path.Combine(DataDirectory, "settings.json");
 
     public static string IdentityFile => Path.Combine(DataDirectory, "identity.bin");

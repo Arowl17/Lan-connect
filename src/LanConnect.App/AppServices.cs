@@ -1,6 +1,7 @@
 using System.Net;
 using System.Reflection;
 using LanConnect.Core;
+using LanConnect.Core.Clipboard;
 using LanConnect.Core.Engine;
 using LanConnect.Core.Net;
 using LanConnect.Core.Settings;
@@ -11,8 +12,10 @@ namespace LanConnect.App;
 /// <summary>Everything that runs in the background, created once at startup.</summary>
 internal sealed class AppServices : IAsyncDisposable
 {
-    private AppServices(SettingsStore settings, DeviceIdentity identity, NetworkHost host, DiscoveryService? discovery, WindowsPlatform platform, SwitchEngine engine, HookThread hooks)
+    private AppServices(SettingsStore settings, DeviceIdentity identity, NetworkHost host, DiscoveryService? discovery, WindowsPlatform platform, SwitchEngine engine, HookThread hooks, WpfClipboard clipboard, ClipboardSync clipboardSync)
     {
+        Clipboard = clipboard;
+        ClipboardSync = clipboardSync;
         Settings = settings;
         Identity = identity;
         Host = host;
@@ -39,6 +42,10 @@ internal sealed class AppServices : IAsyncDisposable
 
     public HookThread Hooks { get; }
 
+    public WpfClipboard Clipboard { get; }
+
+    public ClipboardSync ClipboardSync { get; }
+
     public static AppServices Start()
     {
         var settings = new SettingsStore(AppPaths.SettingsFile);
@@ -63,6 +70,13 @@ internal sealed class AppServices : IAsyncDisposable
         var engine = new SwitchEngine(platform, settings, host, discovery);
         var hooks = new HookThread(engine);
         platform.AttachHooks(hooks);
+
+        // Copy on one computer, move over, paste on the other.
+        var clipboard = new WpfClipboard();
+        var clipboardSync = new ClipboardSync(clipboard, () => settings.Snapshot().Clipboard, AppPaths.ClipboardDirectory);
+        host.PeerConnected += clipboardSync.Attach;
+        engine.ControlLeaving += clipboardSync.OnControlLeaving;
+
         host.Start();
 
         Log.Info($"Lan Connect {Version} started as \"{settings.Snapshot().DeviceName}\" " +
@@ -71,7 +85,7 @@ internal sealed class AppServices : IAsyncDisposable
         {
             Log.Error("Keyboard hook not installed: switching by hotkey will not work");
         }
-        return new AppServices(settings, identity, host, discovery, platform, engine, hooks);
+        return new AppServices(settings, identity, host, discovery, platform, engine, hooks, clipboard, clipboardSync);
     }
 
     /// <summary>Starts pairing with a computer; the returned session carries the 6-digit code.</summary>
@@ -84,6 +98,7 @@ internal sealed class AppServices : IAsyncDisposable
         Engine.Dispose();
         Discovery?.Dispose();
         await Host.DisposeAsync();
+        Clipboard.Dispose();
         Platform.Dispose();
         Identity.Dispose();
     }

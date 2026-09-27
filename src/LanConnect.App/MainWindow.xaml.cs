@@ -70,6 +70,12 @@ public partial class MainWindow : Window
             PushSlider.Value = s.Edges.PushDistance;
             CornerSlider.Value = s.Edges.DeadCornerSize;
             UpdateSliderLabels();
+            ClipboardEnabled.IsChecked = s.Clipboard.Enabled;
+            ClipboardFiles.IsChecked = s.Clipboard.IncludeFiles;
+            ClipboardOptionsPanel.IsEnabled = s.Clipboard.Enabled;
+            ClipboardLimit.SelectedItem = ClipboardLimit.Items.Cast<ComboBoxItem>()
+                .OrderBy(i => Math.Abs(int.Parse((string)i.Tag, System.Globalization.CultureInfo.InvariantCulture) - s.Clipboard.MaxSizeMb))
+                .First();
             GameEnabled.IsChecked = s.GameMode.Enabled;
             GameHidden.IsChecked = s.GameMode.BlockWhenCursorHidden;
             GameLocked.IsChecked = s.GameMode.BlockWhenCursorLocked;
@@ -339,6 +345,37 @@ public partial class MainWindow : Window
         }
         PushValue.Text = PushSlider.Value == 0 ? "Instant" : $"{PushSlider.Value:0} px push";
         CornerValue.Text = CornerSlider.Value == 0 ? "Off" : $"{CornerSlider.Value:0} px";
+    }
+
+    // ------------------------------------------------------------------ clipboard
+
+    private void OnClipboardChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading)
+        {
+            return;
+        }
+        var enabled = ClipboardEnabled.IsChecked == true;
+        var files = ClipboardFiles.IsChecked == true;
+        ClipboardOptionsPanel.IsEnabled = enabled;
+        _services.Settings.Update(s =>
+        {
+            s.Clipboard.Enabled = enabled;
+            s.Clipboard.IncludeFiles = files;
+        });
+    }
+
+    private void OnClipboardLimitChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || ClipboardLimit.SelectedItem is not ComboBoxItem { Tag: string tag })
+        {
+            return;
+        }
+        var megabytes = int.Parse(tag, System.Globalization.CultureInfo.InvariantCulture);
+        if (megabytes != _services.Settings.Snapshot().Clipboard.MaxSizeMb)
+        {
+            _services.Settings.Update(s => s.Clipboard.MaxSizeMb = megabytes);
+        }
     }
 
     // ------------------------------------------------------------------ game mode
