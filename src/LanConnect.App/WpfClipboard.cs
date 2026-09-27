@@ -74,7 +74,12 @@ internal sealed partial class WpfClipboard : IClipboardPlatform, IDisposable
         AddText(data, DataFormats.Html, ClipboardFormats.Html, content);
         AddText(data, DataFormats.Rtf, ClipboardFormats.Rtf, content);
         AddBytes(data, PngFormat, ClipboardFormats.Png, content);
-        AddBytes(data, DataFormats.Dib, ClipboardFormats.Dib, content);
+        if (!content.Formats.ContainsKey(ClipboardFormats.Png))
+        {
+            // The raw bitmap is often 5-10x larger; when a PNG is there the receiving side
+            // recreates the bitmap from it.
+            AddBytes(data, DataFormats.Dib, ClipboardFormats.Dib, content);
+        }
         return content.IsEmpty ? null : content;
     }
 
