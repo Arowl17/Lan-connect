@@ -14,6 +14,9 @@ public enum FrameType : byte
 
     /// <summary>An encrypted input datagram carried over TCP when UDP is blocked.</summary>
     InputTunnel = 2,
+
+    /// <summary>A piece of a clipboard transfer (see <c>ClipboardProtocol</c>).</summary>
+    Clipboard = 3,
 }
 
 /// <summary>
@@ -158,8 +161,12 @@ public sealed class FramedConnection : IAsyncDisposable
         return ((FrameType)_type[0], payload);
     }
 
-    /// <summary>Reads frames until the next control message (tunnelled input is returned via <paramref name="onTunnel"/>).</summary>
-    public async Task<ControlMessage?> ReceiveControlAsync(CancellationToken cancellationToken, Action<byte[]>? onTunnel = null)
+    /// <summary>
+    /// Reads frames until the next control message. Other frames (tunnelled input, clipboard)
+    /// go to <paramref name="onOtherFrame"/>; without a handler they are skipped, as are frame
+    /// types from newer versions.
+    /// </summary>
+    public async Task<ControlMessage?> ReceiveControlAsync(CancellationToken cancellationToken, Action<FrameType, byte[]>? onOtherFrame = null)
     {
         while (true)
         {
@@ -168,17 +175,11 @@ public sealed class FramedConnection : IAsyncDisposable
             {
                 return null;
             }
-            switch (f.Type)
+            if (f.Type == FrameType.Control)
             {
-                case FrameType.Control:
-                    return ControlJson.Deserialize(f.Payload) ?? throw new InvalidDataException("Empty control message.");
-                case FrameType.InputTunnel:
-                    onTunnel?.Invoke(f.Payload);
-                    break;
-                default:
-                    // Unknown frame types from newer versions are skipped.
-                    break;
+                return ControlJson.Deserialize(f.Payload) ?? throw new InvalidDataException("Empty control message.");
             }
+            onOtherFrame?.Invoke(f.Type, f.Payload);
         }
     }
 

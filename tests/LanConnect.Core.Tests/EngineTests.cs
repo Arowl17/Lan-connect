@@ -80,9 +80,19 @@ internal sealed class TestComputer : IAsyncDisposable
         Settings.Update(s => s.DeviceName = name);
         Platform = new FakePlatform(layout);
         Host = new NetworkHost(Identity, () => name, Settings, "test", tcpPort: 0, udpPort: 0);
-        Host.Start();
         Engine = new SwitchEngine(Platform, Settings, Host, discovery: null);
+        Clipboard = new FakeClipboard();
+        ClipboardSync = new Clipboard.ClipboardSync(Clipboard, () => Settings.Snapshot().Clipboard, Path.Combine(_dir, "clipboard"));
+        Host.PeerConnected += ClipboardSync.Attach;
+        Engine.ControlLeaving += ClipboardSync.OnControlLeaving;
+        Host.Start();
     }
+
+    public FakeClipboard Clipboard { get; }
+
+    public Clipboard.ClipboardSync ClipboardSync { get; }
+
+    public string Directory => _dir;
 
     public DeviceIdentity Identity { get; }
 
@@ -118,7 +128,7 @@ internal sealed class TestComputer : IAsyncDisposable
         Identity.Dispose();
         try
         {
-            Directory.Delete(_dir, recursive: true);
+            System.IO.Directory.Delete(_dir, recursive: true);
         }
         catch (IOException)
         {

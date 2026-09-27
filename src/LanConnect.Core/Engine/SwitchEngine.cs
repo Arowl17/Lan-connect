@@ -106,6 +106,12 @@ public sealed class SwitchEngine : IDisposable
     /// <summary>Raised when paired devices connect/disconnect or change.</summary>
     public event Action? PeersChanged;
 
+    /// <summary>
+    /// Control is moving from this computer to the given one (raised on a thread-pool thread).
+    /// Used to bring the clipboard along.
+    /// </summary>
+    public event Action<PeerLink>? ControlLeaving;
+
     public EngineStatus Status
     {
         get
@@ -295,6 +301,7 @@ public sealed class SwitchEngine : IDisposable
         link.KeepAwake = true;
         // The cursor enters the other computer through the edge facing us.
         link.Send(InputItem.Enter(side.Opposite(), fraction));
+        RaiseControlLeaving(link);
         Log.Info($"Controlling {link.PeerName}");
         AfterStateChange(controlling: true);
     }
@@ -446,6 +453,7 @@ public sealed class SwitchEngine : IDisposable
                     case InputItemType.TakeBack:
                         if (_state == ControlState.ControlledBy && _peer == link)
                         {
+                            RaiseControlLeaving(link);
                             ReleaseInjectedLocked(outputs);
                             link.KeepAwake = false;
                             _state = ControlState.Local;
@@ -491,6 +499,7 @@ public sealed class SwitchEngine : IDisposable
         {
             // Back to the controlling computer through the edge facing it.
             link.Send(InputItem.Leave(d.Side, d.Fraction));
+            RaiseControlLeaving(link);
             ReleaseInjectedLocked(outputs);
             link.KeepAwake = false;
             _state = ControlState.Local;
@@ -855,6 +864,22 @@ public sealed class SwitchEngine : IDisposable
                 }
             }
         }
+    }
+
+    private void RaiseControlLeaving(PeerLink target)
+    {
+        // Called under the lock (possibly on the hook thread): handlers run elsewhere.
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                ControlLeaving?.Invoke(target);
+            }
+            catch (Exception e)
+            {
+                Log.Error("ControlLeaving handler failed", e);
+            }
+        });
     }
 
     private void RaiseStatus()

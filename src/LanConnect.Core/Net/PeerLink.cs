@@ -96,6 +96,9 @@ public sealed class PeerLink : IAsyncDisposable
 
     public event Action<PeerLink, ControlMessage>? ControlReceived;
 
+    /// <summary>Raised on the connection's read loop for each clipboard frame, in order.</summary>
+    public event Action<PeerLink, byte[]>? ClipboardFrameReceived;
+
     public event Action<PeerLink>? Closed;
 
     private static readonly long TicksPerMs = Math.Max(1, Stopwatch.Frequency / 1000);
@@ -172,6 +175,13 @@ public sealed class PeerLink : IAsyncDisposable
     }
 
     public Task SendControlAsync(ControlMessage message) => _connection.SendAsync(message, _cts.Token);
+
+    /// <summary>Sends one clipboard frame over the encrypted connection (ordered, reliable).</summary>
+    public async Task SendClipboardFrameAsync(ReadOnlyMemory<byte> frame, CancellationToken cancellationToken)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
+        await _connection.SendFrameAsync(FrameType.Clipboard, frame, linked.Token).ConfigureAwait(false);
+    }
 
     internal void OnDatagram(ReadOnlySpan<byte> datagram, SocketAddress? from, bool viaUdp)
     {
@@ -344,11 +354,7 @@ public sealed class PeerLink : IAsyncDisposable
     {
         while (!token.IsCancellationRequested)
         {
-            var message = await _connection.ReceiveControlAsync(token, payload =>
-            {
-                Volatile.Write(ref _lastControlReceiveMs, NowMs);
-                OnDatagram(payload, null, viaUdp: false);
-            }).ConfigureAwait(false);
+            var message = await _connection.ReceiveControlAsync(token, OnOtherFrame).ConfigureAwait(false);
             if (message is null)
             {
                 return;
@@ -382,6 +388,27 @@ public sealed class PeerLink : IAsyncDisposable
                     }
                     break;
             }
+        }
+    }
+
+    private void OnOtherFrame(FrameType type, byte[] payload)
+    {
+        Volatile.Write(ref _lastControlReceiveMs, NowMs);
+        switch (type)
+        {
+            case FrameType.InputTunnel:
+                OnDatagram(payload, null, viaUdp: false);
+                break;
+            case FrameType.Clipboard:
+                try
+                {
+                    ClipboardFrameReceived?.Invoke(this, payload);
+                }
+                catch (Exception e)
+                {
+                    Log.Error("Handling clipboard data failed", e);
+                }
+                break;
         }
     }
 

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using LanConnect.Core.Clipboard;
 using LanConnect.Core.Input;
 using LanConnect.Core.Layout;
 using LanConnect.Core.Net;
@@ -35,6 +36,8 @@ public sealed class AppSettings
     public EdgeOptions Edges { get; set; } = new();
 
     public GameModeOptions GameMode { get; set; } = new();
+
+    public ClipboardOptions Clipboard { get; set; } = new();
 
     public bool StartWithWindows { get; set; } = true;
 
@@ -126,6 +129,7 @@ public sealed class SettingsStore : ITrustStore
                     loaded.Devices ??= new();
                     loaded.Edges ??= new();
                     loaded.GameMode ??= new();
+                    loaded.Clipboard ??= new();
                     loaded.GameMode.BlockedApps ??= GameModeOptions.DefaultBlockedApps();
                     loaded.GameMode.BlockedTitles ??= new();
                     return loaded;
