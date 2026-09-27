@@ -99,11 +99,14 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
             return new ForegroundState(null, null, false, cursorVisible, cursorClipped);
         }
 
-        string? processName = null;
-        if (GetWindowThreadProcessId(window, out var pid) != 0 && pid != 0)
+        GetWindowThreadProcessId(window, out var pid);
+        if (pid == 0 || pid == (uint)Environment.ProcessId)
         {
-            processName = GetProcessName(pid);
+            // Our own settings window: not a game. Reading our own window's title would also
+            // send a message to our UI thread, which the hook thread must never wait for.
+            return new ForegroundState(null, null, false, cursorVisible, cursorClipped);
         }
+        var processName = GetProcessName(pid);
 
         var title = GetText(window, isClass: false);
         var className = GetText(window, isClass: true);
@@ -251,7 +254,7 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
             flags |= KEYEVENTF_EXTENDEDKEY;
         }
         var ki = new KEYBDINPUT { wVk = e.VirtualKey, wScan = e.ScanCode };
-        if (e.ScanCode != 0 && !PreferVirtualKey(e.VirtualKey))
+        if (e.ScanCode is > 0 and <= 0xFF && !PreferVirtualKey(e.VirtualKey))
         {
             // Scan codes behave like the physical key, independent of layouts and modifiers.
             ki.wVk = 0;

@@ -311,8 +311,16 @@ public sealed class NetworkHost : IAsyncDisposable
             PeerDisconnected?.Invoke(replaced);
         }
         Log.Info($"Connected to {link.PeerName} ({link.PeerAddress})");
+        // Let listeners subscribe to the link's events before any input can arrive.
+        try
+        {
+            PeerConnected?.Invoke(link);
+        }
+        catch (Exception e)
+        {
+            Log.Error("PeerConnected handler failed", e);
+        }
         _ = Task.Run(() => link.RunAsync(_cts.Token));
-        PeerConnected?.Invoke(link);
     }
 
     private void OnLinkClosed(PeerLink link)
