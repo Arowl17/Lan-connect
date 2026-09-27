@@ -195,8 +195,10 @@ public class EngineTests
         }
         await WaitUntilAsync(() => pc.Engine.Status.State == ControlState.Local);
         await WaitUntilAsync(() => laptop.Engine.Status.State == ControlState.Local);
-        // The PC cursor continues from its right edge.
-        await WaitUntilAsync(() => pc.Platform.Cursor.X == 3838);
+        // The PC cursor is placed just inside its right edge. (Checking where the engine put it,
+        // not where it is now: a push from the loop above can land after control came back and
+        // legitimately move it further.)
+        await WaitUntilAsync(() => pc.Platform.LastMoveTarget is { X: 3838 });
         Assert.False(pc.Move(-10, 0)); // local again
     }
 
