@@ -123,6 +123,15 @@ CI (`.github/workflows/build.yml`) does all of this on every push.
 - The controlling computer swallows its local input with low-level hooks and forwards
   it. The controlled computer injects it with `SendInput`, tracks the cursor itself and
   sends control back when the cursor pushes through the edge facing the controller.
+- Only one computer (the one with the smaller id) dials right away; the other waits a
+  few seconds first, so the two never build duplicate connections that would drop a
+  switch in progress.
+- Hooks can miss events (Windows silently removes a hook that was ever too slow, and the
+  mouse hook is removed on purpose during games). Remembered key and button state is
+  re-checked against Windows before it matters, and a watchdog reinstalls hooks that
+  stopped receiving input.
+- The app opts out of Windows 11's efficiency mode for background apps and runs at
+  above-normal priority: Windows waits for its hook callbacks before delivering any input.
 
 ## Roadmap
 
