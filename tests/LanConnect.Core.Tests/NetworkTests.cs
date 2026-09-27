@@ -156,6 +156,28 @@ public class NetworkTests
     }
 
     [Fact]
+    public async Task DeclinedPairingRequestsAreNotRepeatedImmediately()
+    {
+        await using var a = new TestDevice("A");
+        await using var b = new TestDevice("B");
+        var requests = 0;
+        b.Host.PairingRequested += s =>
+        {
+            Interlocked.Increment(ref requests);
+            s.Reject();
+        };
+
+        var first = await a.Host.PairAsync(b.EndPoint).WaitAsync(Timeout);
+        Assert.False(await first.Result.WaitAsync(Timeout));
+
+        // Let B finish the first attempt, so it's the cooldown (not "busy") that refuses.
+        await Task.Delay(500);
+        // Asking again right away doesn't pop up another dialog on B.
+        await Assert.ThrowsAnyAsync<Exception>(() => a.Host.PairAsync(b.EndPoint).WaitAsync(Timeout));
+        Assert.Equal(1, requests);
+    }
+
+    [Fact]
     public async Task UnpairedComputerCannotConnect()
     {
         await using var intruder = new TestDevice("Intruder");

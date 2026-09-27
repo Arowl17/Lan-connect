@@ -23,7 +23,11 @@ public sealed class NetworkHost : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentDictionary<string, PeerLink> _links = new();
     private readonly ConcurrentDictionary<string, byte> _dialing = new();
+    private readonly ConcurrentDictionary<IPAddress, long> _pairingCooldown = new();
     private int _pairingInProgress;
+
+    /// <summary>After a declined or failed pairing request, ignore that address for a while.</summary>
+    private const long PairingCooldownMs = 60_000;
 
     public NetworkHost(DeviceIdentity identity, Func<string> deviceName, ITrustStore trust, string appVersion, int tcpPort = FramedConnection.DefaultPort, int udpPort = FramedConnection.DefaultPort)
     {
@@ -231,6 +235,12 @@ public sealed class NetworkHost : IAsyncDisposable
                     break;
 
                 case ConnectPurpose.Pair when AllowIncomingPairing && PairingRequested is not null:
+                    var address = connection.RemoteEndPoint.Address;
+                    if (_pairingCooldown.TryGetValue(address, out var until) && PeerLink.NowMs < until)
+                    {
+                        Log.Info($"Ignoring repeated pairing request from {address}");
+                        return;
+                    }
                     if (Interlocked.Exchange(ref _pairingInProgress, 1) != 0)
                     {
                         return; // one at a time
@@ -241,6 +251,13 @@ public sealed class NetworkHost : IAsyncDisposable
                         var session = await PairingSession.RunResponderAsync(connection, OwnId, hello.DeviceName, cts.Token).ConfigureAwait(false);
                         handedOff = true;
                         _ = FinishPairingAsync(session);
+                        _ = session.Result.ContinueWith(t =>
+                        {
+                            if (!t.Result)
+                            {
+                                _pairingCooldown[address] = PeerLink.NowMs + PairingCooldownMs;
+                            }
+                        }, TaskScheduler.Default);
                         PairingRequested?.Invoke(session);
                     }
                     finally
@@ -279,6 +296,10 @@ public sealed class NetworkHost : IAsyncDisposable
 
     private void StartLink(FramedConnection connection, HelloMessage hello)
     {
+        if (hello.ProtocolVersion != PeerLink.ProtocolVersion)
+        {
+            Log.Warn($"{DeviceNames.Sanitize(hello.DeviceName)} uses protocol {hello.ProtocolVersion} (this computer: {PeerLink.ProtocolVersion}); update Lan Connect on both computers if anything misbehaves");
+        }
         var link = new PeerLink(connection, hello, Udp);
 
         // Both computers may dial each other at the same moment. Both sides keep the connection

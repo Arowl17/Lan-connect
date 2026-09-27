@@ -84,6 +84,8 @@ public partial class App : Application
         listener.Start();
 
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        // Signing out or shutting down: hand control back so nothing stays held on the other computer.
+        SessionEnding += (_, _) => _services?.Engine.ReturnHome();
         Services.Host.PairingRequested += OnPairingRequested;
 
         _tray = new TrayIcon(Services, ShowMainWindow, Quit);
