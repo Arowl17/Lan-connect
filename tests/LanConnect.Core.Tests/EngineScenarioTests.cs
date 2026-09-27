@@ -20,6 +20,28 @@ public class EngineScenarioTests
     }
 
     [Fact]
+    public async Task StartingTogetherMakesExactlyOneConnection()
+    {
+        var pc = new TestComputer("Gaming PC", new DesktopLayout([RectI.FromSize(0, 0, 1920, 1080)]));
+        var laptop = new TestComputer("Work Laptop", new DesktopLayout([RectI.FromSize(0, 0, 1920, 1200)]));
+        await using var _ = pc;
+        await using var __ = laptop;
+        var dropped = 0;
+        pc.Host.PeerDisconnected += _ => Interlocked.Increment(ref dropped);
+        laptop.Host.PeerDisconnected += _ => Interlocked.Increment(ref dropped);
+
+        // Both know each other's address, as after a restart: both could dial.
+        pc.Settings.Update(s => s.Devices.Add(new Settings.PairedDevice { Id = laptop.Id, Name = "Work Laptop", Placement = Side.Right, LastAddress = "127.0.0.1", LastPort = laptop.Host.TcpPort }));
+        laptop.Settings.Update(s => s.Devices.Add(new Settings.PairedDevice { Id = pc.Id, Name = "Gaming PC", Placement = Side.Left, LastAddress = "127.0.0.1", LastPort = pc.Host.TcpPort }));
+
+        await WaitUntilAsync(() => pc.Engine.IsConnected(laptop.Id) && laptop.Engine.IsConnected(pc.Id));
+        await Task.Delay(7000); // past the second computer's dial delay
+        Assert.Equal(0, dropped); // no duplicate connection was made and then dropped
+        Assert.Single(pc.Host.Links);
+        Assert.Single(laptop.Host.Links);
+    }
+
+    [Fact]
     public async Task LaggingCursorOnTheLaptopDoesNotLoseMovement()
     {
         var (pc, laptop) = await EngineTests.SetUpAsync();

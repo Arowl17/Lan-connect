@@ -108,9 +108,19 @@ public sealed class PeerLink : IAsyncDisposable
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
         var token = linked.Token;
-        _udp.Register(_rxCrypto.SessionId, this);
-        _senderThread = new Thread(SenderLoop) { IsBackground = true, Name = $"LanConnect send {PeerName}", Priority = ThreadPriority.AboveNormal };
-        _senderThread.Start();
+        lock (_lock)
+        {
+            // Closing and starting can race (e.g. the app quits as a connection comes up).
+            // Only a started thread is ever published, and nothing starts after a close.
+            if (Volatile.Read(ref _closed) != 0)
+            {
+                return;
+            }
+            _udp.Register(_rxCrypto.SessionId, this);
+            var thread = new Thread(SenderLoop) { IsBackground = true, Name = $"LanConnect send {PeerName}", Priority = ThreadPriority.AboveNormal };
+            thread.Start();
+            _senderThread = thread;
+        }
         try
         {
             await _connection.SendAsync(new SessionKeyMessage(_rxCrypto.SessionId, _rxKey), token).ConfigureAwait(false);
@@ -408,10 +418,15 @@ public sealed class PeerLink : IAsyncDisposable
         {
             return;
         }
+        Thread? thread;
+        lock (_lock)
+        {
+            thread = _senderThread;
+        }
         _udp.Unregister(_rxCrypto.SessionId);
         await _cts.CancelAsync().ConfigureAwait(false);
         _wake.Set();
-        if (_senderThread is { } thread && thread != Thread.CurrentThread)
+        if (thread is not null && thread != Thread.CurrentThread)
         {
             thread.Join(2000);
         }

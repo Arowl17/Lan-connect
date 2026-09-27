@@ -27,8 +27,11 @@ public enum InputRoute
 /// </summary>
 public sealed class CaptureRouter
 {
-    /// <summary>Held keys auto-repeat at least every second (Windows' longest repeat delay).</summary>
-    private const long KeyHeldTimeoutMs = 1200;
+    /// <summary>
+    /// Held keys auto-repeat at least every second (Windows' longest repeat delay), so a key
+    /// silent for longer than this is no longer held.
+    /// </summary>
+    private const long KeyHeldTimeoutMs = 1500;
 
     /// <summary>Mouse buttons don't auto-repeat; give up on a missed release after this long.</summary>
     private const long ButtonHeldTimeoutMs = 15_000;

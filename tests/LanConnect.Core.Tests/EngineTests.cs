@@ -209,6 +209,10 @@ public class EngineTests
         await using var _ = pc;
         await using var __ = laptop;
 
+        // The test holds B without auto-repeat events; freeze the router's clock so the
+        // "release was missed" expiry can't kick in on a slow machine.
+        pc.Engine.Router.Clock = () => 0;
+
         // Ctrl+Alt+Right: go to the laptop. Ctrl and Alt reach the PC as usual.
         Assert.False(pc.Key(VirtualKeys.LControl, true));
         Assert.False(pc.Key(VirtualKeys.LMenu, true));

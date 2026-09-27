@@ -33,6 +33,13 @@ public sealed class SwitchEngine : IDisposable
 {
     private const int ControllerWatchdogMs = 1500;
 
+    /// <summary>
+    /// Only the computer with the smaller id dials right away; the other one waits this long
+    /// first. If both dialed at once, one of the two connections would be dropped moments later
+    /// (taking any control in progress with it).
+    /// </summary>
+    private const long SecondaryDialDelayMs = 6000;
+
     private readonly IPlatform _platform;
     private readonly SettingsStore _settings;
     private readonly NetworkHost _host;
@@ -45,6 +52,7 @@ public sealed class SwitchEngine : IDisposable
     private readonly PressedInputTracker _injected = new();
     private readonly Dictionary<Side, string> _placements = new();
     private readonly List<Side> _activeSides = new();
+    private readonly Dictionary<string, long> _offlineSince = new();
     private readonly Timer _timer;
 
     private AppSettings _config;
@@ -57,6 +65,7 @@ public sealed class SwitchEngine : IDisposable
     private bool _paused;
     private bool _mouseHookEnabled;
     private long _lastDialMs;
+    private long _controlStartedMs;
     private PointI? _pendingCursorMove;
     private Side[] _leaveSides = [Side.Left];
 
@@ -87,6 +96,9 @@ public sealed class SwitchEngine : IDisposable
         _host.PeerDisconnected += OnPeerDisconnected;
         _timer = new Timer(_ => Tick(), null, 250, 250);
     }
+
+    /// <summary>Tests: access to the router (e.g. to control its clock).</summary>
+    internal CaptureRouter Router => _router;
 
     public event Action<EngineStatus>? StatusChanged;
 
@@ -276,6 +288,7 @@ public sealed class SwitchEngine : IDisposable
         _state = ControlState.Controlling;
         _peer = link;
         _peerSide = side;
+        _controlStartedMs = PeerLink.NowMs;
         _edgePolicy.Reset();
         _router.BeginCapture(_isKeyDown);
         link.KeepAwake = true;
@@ -409,6 +422,7 @@ public sealed class SwitchEngine : IDisposable
                         _state = ControlState.ControlledBy;
                         _peer = link;
                         _peerSide = item.Side;
+                        _controlStartedMs = PeerLink.NowMs;
                         _leaveSides = [item.Side];
                         _leavePolicy.Reset();
                         link.KeepAwake = true;
@@ -638,12 +652,14 @@ public sealed class SwitchEngine : IDisposable
                 }
 
                 // Watchdog: never leave the user without a mouse if the other computer goes quiet.
-                if (_state == ControlState.Controlling && _peer is { } peer && peer.SilenceMs > ControllerWatchdogMs)
+                // Silence counts from the switch at the earliest: an idle peer only sends a packet
+                // every second, and needs a moment to answer (e.g. its Wi-Fi waking from power save).
+                if (_state == ControlState.Controlling && _peer is { } peer && SilenceSinceSwitch(peer) > ControllerWatchdogMs)
                 {
                     Log.Warn($"{peer.PeerName} stopped responding; taking control back");
                     EndControlLocked(takeBack: true, leaveFraction: null);
                 }
-                else if (_state == ControlState.ControlledBy && _peer is { } controller && controller.SilenceMs > ControllerWatchdogMs * 2)
+                else if (_state == ControlState.ControlledBy && _peer is { } controller && SilenceSinceSwitch(controller) > ControllerWatchdogMs * 2)
                 {
                     Log.Warn($"{controller.PeerName} went quiet; releasing held keys");
                     ReleaseInjectedLocked(outputs);
@@ -677,11 +693,25 @@ public sealed class SwitchEngine : IDisposable
     private void DialPairedDevices()
     {
         var discovered = _discovery?.Devices ?? [];
+        var now = PeerLink.NowMs;
         foreach (var device in _config.Devices)
         {
-            if (_host.GetLink(device.Id) is not null)
+            lock (_offlineSince)
             {
-                continue;
+                if (_host.GetLink(device.Id) is not null)
+                {
+                    _offlineSince.Remove(device.Id);
+                    continue;
+                }
+                if (!_offlineSince.TryGetValue(device.Id, out var since))
+                {
+                    _offlineSince[device.Id] = since = now;
+                }
+                var primaryDialer = string.CompareOrdinal(_host.OwnId, device.Id) < 0;
+                if (!primaryDialer && now - since < SecondaryDialDelayMs)
+                {
+                    continue; // give the other computer the first go
+                }
             }
             var candidates = new List<IPEndPoint>();
             foreach (var seen in discovered.Where(d => d.Id == device.Id))
@@ -698,6 +728,8 @@ public sealed class SwitchEngine : IDisposable
             }
         }
     }
+
+    private long SilenceSinceSwitch(PeerLink peer) => Math.Min(peer.SilenceMs, PeerLink.NowMs - _controlStartedMs);
 
     /// <summary>Checked at the moment of an edge crossing, so it is always current.</summary>
     private bool IsGameBlockedNow() =>

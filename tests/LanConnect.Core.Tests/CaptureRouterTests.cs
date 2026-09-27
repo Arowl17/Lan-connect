@@ -162,7 +162,7 @@ public class CaptureRouterRecoveryTests
         router.BeginCapture();
         router.Route(Key(0x42, true));
         router.EndCapture();
-        now += 2000;
+        now += 3000;
         router.ExpireStale();
         Assert.False(router.HasPendingForeignReleases);
     }
