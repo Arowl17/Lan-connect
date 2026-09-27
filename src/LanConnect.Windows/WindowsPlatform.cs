@@ -17,6 +17,48 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
     private bool _wantMouseHook;
     private bool _highResolutionTimer;
     private PointI _lastCursor;
+    private long _lastInjectWarning = long.MinValue;
+    private int _suppressedInjectWarnings;
+
+    public WindowsPlatform()
+    {
+        OptOutOfPowerThrottling();
+        try
+        {
+            // Windows waits for our hook callbacks before delivering any mouse or keyboard input,
+            // so they should never queue behind a busy game's threads.
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            process.PriorityClass = System.Diagnostics.ProcessPriorityClass.AboveNormal;
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            Log.Warn($"Could not raise process priority: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Windows 11 runs apps without a visible window in "efficiency mode" (slower cores, lower
+    /// clocks) and may ignore their timer-resolution requests. Lan Connect sits in the tray but
+    /// is on the input path of every mouse movement, so it opts out.
+    /// </summary>
+    private static void OptOutOfPowerThrottling()
+    {
+        var state = new PROCESS_POWER_THROTTLING_STATE
+        {
+            Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+            StateMask = 0, // "off" for the bits in ControlMask
+        };
+        if (!SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state, (uint)sizeof(PROCESS_POWER_THROTTLING_STATE)))
+        {
+            // Older Windows 10 doesn't know the timer-resolution flag: opt out of the rest.
+            state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+            if (!SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state, (uint)sizeof(PROCESS_POWER_THROTTLING_STATE)))
+            {
+                Log.Warn($"Could not opt out of power throttling (error {Marshal.GetLastPInvokeError()})");
+            }
+        }
+    }
 
     /// <summary>Connects the hooks once the engine exists (the engine needs the platform first).</summary>
     public void AttachHooks(HookThread hooks)
@@ -242,7 +284,7 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
         }
         if (SendInput(1, &input, sizeof(INPUT)) == 0)
         {
-            Log.Warn($"SendInput failed for {e} (error {Marshal.GetLastPInvokeError()}); an admin window may be focused");
+            WarnInjectFailed(e, Marshal.GetLastPInvokeError());
         }
     }
 
@@ -287,6 +329,22 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
         _ => false,
     };
 
+    /// <summary>Logs injection failures at most every 10 s (a UAC prompt can fail every event).</summary>
+    private void WarnInjectFailed(in InputEvent e, int error)
+    {
+        var now = Environment.TickCount64;
+        if (now - _lastInjectWarning < 10_000)
+        {
+            _suppressedInjectWarnings++;
+            return;
+        }
+        var suppressed = _suppressedInjectWarnings;
+        _suppressedInjectWarnings = 0;
+        _lastInjectWarning = now;
+        Log.Warn($"SendInput failed for {e} (error {error}); an admin window or the lock screen may be active" +
+                 (suppressed > 0 ? $" ({suppressed} similar failures not logged)" : ""));
+    }
+
     public bool IsVirtualKeyDown(ushort virtualKey)
     {
         // GetAsyncKeyState reports physical mouse buttons; our events use logical buttons.
@@ -319,12 +377,11 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
         {
             if (controlling && !_highResolutionTimer)
             {
-                timeBeginPeriod(1);
-                _highResolutionTimer = true;
+                _highResolutionTimer = timeBeginPeriod(1) == 0; // TIMERR_NOERROR
             }
             else if (!controlling && _highResolutionTimer)
             {
-                timeEndPeriod(1);
+                _ = timeEndPeriod(1);
                 _highResolutionTimer = false;
             }
         }

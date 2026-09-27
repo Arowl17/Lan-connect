@@ -94,7 +94,7 @@ Requires the .NET 10 SDK.
 
 ```sh
 dotnet test tests/LanConnect.Core.Tests            # all logic, networking and scenario tests
-dotnet publish src/LanConnect.App -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o publish
+dotnet publish src/LanConnect.App -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:PublishReadyToRun=true -o publish
 ```
 
 Everything compiles on Linux or macOS too (`EnableWindowsTargeting`), and the core

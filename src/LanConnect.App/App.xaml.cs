@@ -1,3 +1,4 @@
+using System.Runtime;
 using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
@@ -42,6 +43,8 @@ public partial class App : Application
         }
 
         FileLog.Start();
+        // Avoid long blocking garbage collections: they would pause the input hook thread.
+        GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += (_, args) => Log.Error("Unhandled exception", args.ExceptionObject as Exception);
         TaskScheduler.UnobservedTaskException += (_, args) =>
@@ -152,6 +155,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _tray?.Dispose();
+        _showSignal?.Dispose();
         _singleInstance?.Dispose();
         base.OnExit(e);
     }

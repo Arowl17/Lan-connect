@@ -21,10 +21,15 @@ public sealed unsafe class HookThread : IDisposable
 {
     private const uint MsgEnableMouseHook = WM_APP + 1;
     private const uint MsgDisableMouseHook = WM_APP + 2;
+    private const uint WatchdogIntervalMs = 2000;
 
     private static SwitchEngine? s_engine;
     private static nint s_keyboardHook;
     private static nint s_mouseHook;
+
+    /// <summary>Tick count of the last hook callback (any event, including injected ones).</summary>
+    private static long s_lastHookEvent;
+    private static long s_lastWatchdogLog = long.MinValue;
 
     private readonly Thread _thread;
     private readonly ManualResetEventSlim _started = new(false);
@@ -59,6 +64,7 @@ public sealed unsafe class HookThread : IDisposable
     {
         _threadId = GetCurrentThreadId();
         var module = GetModuleHandleW(null);
+        s_lastHookEvent = Environment.TickCount64;
         s_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, &KeyboardProc, module, 0);
         if (s_keyboardHook == 0)
         {
@@ -68,6 +74,7 @@ public sealed unsafe class HookThread : IDisposable
         {
             InstallMouseHook(module);
         }
+        SetTimer(0, 0, WatchdogIntervalMs, 0); // WM_TIMER to this thread for the hook watchdog
         _started.Set();
 
         while (GetMessageW(out var msg, 0, 0, 0) > 0)
@@ -75,9 +82,12 @@ public sealed unsafe class HookThread : IDisposable
             switch (msg.message)
             {
                 case MsgEnableMouseHook:
-                    if (_wantMouseHook)
+                    if (_wantMouseHook && s_mouseHook == 0)
                     {
                         InstallMouseHook(module);
+                        // Good moment to refresh the keyboard hook too: while the mouse hook was
+                        // off (gaming) the watchdog couldn't tell whether it was still alive.
+                        ReinstallKeyboardHook(module);
                     }
                     break;
                 case MsgDisableMouseHook:
@@ -85,6 +95,9 @@ public sealed unsafe class HookThread : IDisposable
                     {
                         RemoveMouseHook();
                     }
+                    break;
+                case WM_TIMER:
+                    CheckHooksAlive(module);
                     break;
             }
         }
@@ -110,6 +123,67 @@ public sealed unsafe class HookThread : IDisposable
         }
     }
 
+    /// <summary>
+    /// Windows silently removes a low-level hook whose callback ever takes too long (for example
+    /// while the PC is overloaded). If input happened that our hooks never saw, put them back.
+    /// Only checked while both hooks are installed; otherwise unseen mouse input is expected.
+    /// </summary>
+    private static void CheckHooksAlive(nint module)
+    {
+        if (s_mouseHook == 0 || s_keyboardHook == 0)
+        {
+            return;
+        }
+        var info = new LASTINPUTINFO { cbSize = (uint)sizeof(LASTINPUTINFO) };
+        if (!GetLastInputInfo(ref info))
+        {
+            return;
+        }
+        var lastInput = info.dwTime;                       // GetTickCount() clock
+        var lastSeen = unchecked((uint)Volatile.Read(ref s_lastHookEvent));
+        var now = unchecked((uint)Environment.TickCount);
+        if ((int)(lastInput - lastSeen) > 1000 && (int)(now - lastInput) < 10_000)
+        {
+            // Touch and pen input also count as input but never reach these hooks, so this can
+            // fire harmlessly on touchscreens; keep the log quiet.
+            if (Environment.TickCount64 - s_lastWatchdogLog > 60_000)
+            {
+                s_lastWatchdogLog = Environment.TickCount64;
+                Log.Warn("Input hooks missed recent input (removed by Windows?); reinstalling");
+            }
+            ReinstallKeyboardHook(module);
+            var old = s_mouseHook;
+            s_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, &MouseProc, module, 0);
+            if (s_mouseHook == 0)
+            {
+                Log.Error($"Mouse hook reinstall failed (error {Marshal.GetLastPInvokeError()})");
+                s_mouseHook = old;
+            }
+            else
+            {
+                UnhookWindowsHookEx(old);
+            }
+            s_lastHookEvent = Environment.TickCount64;
+        }
+    }
+
+    /// <summary>Installs a fresh keyboard hook before removing the old one, so no key is missed.</summary>
+    private static void ReinstallKeyboardHook(nint module)
+    {
+        var fresh = SetWindowsHookExW(WH_KEYBOARD_LL, &KeyboardProc, module, 0);
+        if (fresh == 0)
+        {
+            Log.Error($"Keyboard hook reinstall failed (error {Marshal.GetLastPInvokeError()})");
+            return;
+        }
+        var old = s_keyboardHook;
+        s_keyboardHook = fresh;
+        if (old != 0)
+        {
+            UnhookWindowsHookEx(old);
+        }
+    }
+
     private static void RemoveMouseHook()
     {
         if (s_mouseHook != 0)
@@ -122,6 +196,7 @@ public sealed unsafe class HookThread : IDisposable
     [UnmanagedCallersOnly]
     private static nint MouseProc(int nCode, nuint wParam, nint lParam)
     {
+        s_lastHookEvent = Environment.TickCount64;
         try
         {
             if (nCode >= 0 && s_engine is { } engine)
@@ -179,6 +254,7 @@ public sealed unsafe class HookThread : IDisposable
     [UnmanagedCallersOnly]
     private static nint KeyboardProc(int nCode, nuint wParam, nint lParam)
     {
+        s_lastHookEvent = Environment.TickCount64;
         try
         {
             if (nCode >= 0 && s_engine is { } engine)

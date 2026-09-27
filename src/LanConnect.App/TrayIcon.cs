@@ -73,6 +73,10 @@ internal sealed class TrayIcon : IDisposable
         {
             return (_idle, "Lan Connect: no computers connected");
         }
+        if (connected.All(d => d.Placement is null))
+        {
+            return (_idle, $"Lan Connect: open Settings and choose where {connected[0].Name} is");
+        }
         if (status.GameModeReason is not null)
         {
             return (_game, $"Lan Connect: game mode ({status.GameModeReason}). Use {HotkeyText()} to switch");
