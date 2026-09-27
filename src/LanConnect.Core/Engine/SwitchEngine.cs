@@ -53,6 +53,7 @@ public sealed class SwitchEngine : IDisposable
     private readonly Dictionary<Side, string> _placements = new();
     private readonly List<Side> _activeSides = new();
     private readonly Dictionary<string, long> _offlineSince = new();
+    private readonly Dictionary<string, long> _reachableSince = new();
     private readonly Timer _timer;
 
     private AppSettings _config;
@@ -701,11 +702,27 @@ public sealed class SwitchEngine : IDisposable
                 if (_host.GetLink(device.Id) is not null)
                 {
                     _offlineSince.Remove(device.Id);
+                    _reachableSince.Remove(device.Id);
                     continue;
                 }
                 if (!_offlineSince.TryGetValue(device.Id, out var since))
                 {
                     _offlineSince[device.Id] = since = now;
+                }
+                // Measure the delay from when the other computer (re)appeared on the network: it
+                // dials us as soon as it starts, and must get the first go even after being off
+                // for hours.
+                if (discovered.Any(d => d.Id == device.Id))
+                {
+                    if (!_reachableSince.TryGetValue(device.Id, out var reachable))
+                    {
+                        _reachableSince[device.Id] = reachable = now;
+                    }
+                    since = Math.Max(since, reachable);
+                }
+                else
+                {
+                    _reachableSince.Remove(device.Id);
                 }
                 var primaryDialer = string.CompareOrdinal(_host.OwnId, device.Id) < 0;
                 if (!primaryDialer && now - since < SecondaryDialDelayMs)
