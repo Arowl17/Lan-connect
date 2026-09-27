@@ -112,6 +112,42 @@ public sealed class SwitchEngine : IDisposable
 
     public bool IsConnected(string deviceId) => _host.GetLink(deviceId) is not null;
 
+    /// <summary>Moves control to a connected, placed device (e.g. from the tray menu).</summary>
+    public bool SwitchTo(string deviceId)
+    {
+        lock (_lock)
+        {
+            if (_paused || _state == ControlState.ControlledBy)
+            {
+                return false;
+            }
+            var entry = _placements.FirstOrDefault(p => p.Value == deviceId);
+            if (entry.Value is null || _host.GetLink(deviceId) is not { } link)
+            {
+                return false;
+            }
+            if (_state == ControlState.Controlling)
+            {
+                if (_peer == link)
+                {
+                    return true;
+                }
+                EndControlLocked(takeBack: true, leaveFraction: null);
+            }
+            BeginControlLocked(link, entry.Key, 0.5);
+            return true;
+        }
+    }
+
+    /// <summary>Takes control back to this computer.</summary>
+    public void ReturnHome()
+    {
+        lock (_lock)
+        {
+            EndControlLocked(takeBack: true, leaveFraction: null);
+        }
+    }
+
     public PeerLink? GetLink(string deviceId) => _host.GetLink(deviceId);
 
     // ------------------------------------------------------------------ hook thread

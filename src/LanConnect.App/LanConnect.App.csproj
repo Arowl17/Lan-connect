@@ -9,11 +9,15 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- WPF app: DPI awareness belongs in the manifest (the WinForms analyzer assumes a WinForms app). -->
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <!-- WinForms is only used for the tray icon; keep WPF types unambiguous. -->
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\*.ico" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\LanConnect.Windows\LanConnect.Windows.csproj" />
