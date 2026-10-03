@@ -46,7 +46,11 @@ public partial class App : Application
         // Avoid long blocking garbage collections: they would pause the input hook thread.
         GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
         DispatcherUnhandledException += OnDispatcherUnhandledException;
-        AppDomain.CurrentDomain.UnhandledException += (_, args) => Log.Error("Unhandled exception", args.ExceptionObject as Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            Log.Error("Unhandled exception", args.ExceptionObject as Exception);
+            _services?.Platform.ConfineCursor(null); // never leave the cursor locked to a game's screen
+        };
         TaskScheduler.UnobservedTaskException += (_, args) =>
         {
             Log.Error("Unobserved task exception", args.Exception);

@@ -161,13 +161,18 @@
                     <TextBlock Text="Game mode" Style="{StaticResource CardTitle}" />
                     <TextBlock Style="{StaticResource Hint}">
                         While you play, the screen edges never switch computers (the hotkey still works), and Lan Connect stops
-                        watching the mouse entirely so your games get untouched input.
+                        watching the mouse entirely so your games get untouched input. Press Esc to open the game's menu and the
+                        mouse is free again.
                     </TextBlock>
                     <CheckBox x:Name="GameEnabled" Content="Turn on game mode" FontWeight="SemiBold" Margin="0,10,0,0" Click="OnGameModeChanged" />
                     <StackPanel x:Name="GameOptions" Margin="24,0,0,0">
                         <CheckBox x:Name="GameHidden" Content="When a game hides the cursor (aiming, looking around)" Click="OnGameModeChanged" />
                         <CheckBox x:Name="GameLocked" Content="When the cursor is locked inside a window" Click="OnGameModeChanged" />
                         <CheckBox x:Name="GameFullscreen" Content="When a fullscreen app is focused" Click="OnGameModeChanged" />
+                        <CheckBox x:Name="GameKeepOnScreen" Content="Keep the mouse on the game's screen while I play" Margin="0,10,0,0" Click="OnGameModeChanged" />
+                        <CheckBox x:Name="GameFreeOnEscape" Content="Free the mouse while the game's menu is open (Esc)" Click="OnGameModeChanged" />
+                        <TextBlock Style="{StaticResource Hint}" Margin="24,2,0,0"
+                                   Text="Esc opens the menu and Esc closes it again. Walking (holding W, A, S or D) also counts as playing." />
                         <TextBlock Text="Always in these apps and windows:" Margin="0,14,0,4" />
                         <ItemsControl x:Name="GameList">
                             <ItemsControl.ItemTemplate>

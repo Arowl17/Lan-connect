@@ -13,6 +13,9 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
 {
     private readonly object _processCacheLock = new();
     private readonly Dictionary<uint, (string Name, long Expires)> _processNames = new();
+    private readonly object _clipLock = new();
+    private RECT? _ownClip;
+    private long _lastClipWarning = long.MinValue;
     private HookThread? _hooks;
     private bool _wantMouseHook;
     private bool _highResolutionTimer;
@@ -132,7 +135,7 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
             var vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
             var vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
             var vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-            cursorClipped = clip.Left > vx || clip.Top > vy || clip.Right < vx + vw || clip.Bottom < vy + vh;
+            cursorClipped = (clip.Left > vx || clip.Top > vy || clip.Right < vx + vw || clip.Bottom < vy + vh) && !IsOwnClip(clip);
         }
 
         var window = GetForegroundWindow();
@@ -153,25 +156,92 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
         var title = GetText(window, isClass: false);
         var className = GetText(window, isClass: true);
         var isDesktop = className is "Progman" or "WorkerW" or "Shell_TrayWnd";
-        var fullscreen = !isDesktop && IsFullscreen(window);
-        return new ForegroundState(processName, title, fullscreen, cursorVisible, cursorClipped);
+        if (isDesktop)
+        {
+            return new ForegroundState(processName, title, false, cursorVisible, cursorClipped);
+        }
+        var screen = MonitorOf(window);
+        return new ForegroundState(processName, title, CoversMonitor(window, screen), cursorVisible, cursorClipped, window, screen);
     }
 
-    private static bool IsFullscreen(nint window)
+    public nint GetForegroundWindowHandle() => GetForegroundWindow();
+
+    private static RectI MonitorOf(nint window)
     {
-        if (!GetWindowRect(window, out var rect))
-        {
-            return false;
-        }
         var monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
         var info = new MONITORINFO { cbSize = (uint)sizeof(MONITORINFO) };
         if (monitor == 0 || !GetMonitorInfoW(monitor, ref info))
         {
-            return false;
+            return default;
         }
         var m = info.rcMonitor;
+        return new RectI(m.Left, m.Top, m.Right, m.Bottom);
+    }
+
+    private static bool CoversMonitor(nint window, RectI m)
+    {
+        if (m.IsEmpty || !GetWindowRect(window, out var rect))
+        {
+            return false;
+        }
         return rect.Left <= m.Left && rect.Top <= m.Top && rect.Right >= m.Right && rect.Bottom >= m.Bottom;
     }
+
+    public void ConfineCursor(RectI? area)
+    {
+        lock (_clipLock)
+        {
+            if (area is { } a)
+            {
+                var wanted = new RECT { Left = a.Left, Top = a.Top, Right = a.Right, Bottom = a.Bottom };
+                if (_ownClip is { } own && SameRect(own, wanted) && CurrentClipIs(wanted))
+                {
+                    return; // still in place
+                }
+                if (ClipCursor(&wanted))
+                {
+                    if (_ownClip is null)
+                    {
+                        Log.Info($"Keeping the cursor on the game's screen {a}");
+                    }
+                    _ownClip = wanted;
+                }
+                else if (Environment.TickCount64 - _lastClipWarning > 60_000)
+                {
+                    _lastClipWarning = Environment.TickCount64;
+                    Log.Warn($"Could not keep the cursor on the game's screen (error {Marshal.GetLastPInvokeError()})");
+                }
+                return;
+            }
+
+            if (_ownClip is { } mine)
+            {
+                _ownClip = null;
+                // Windows drops the lock by itself at times (another window comes to the front,
+                // the lock screen), and a game may have set its own since: only undo ours.
+                if (CurrentClipIs(mine))
+                {
+                    ClipCursor(null);
+                }
+                Log.Info("Cursor free again");
+            }
+        }
+    }
+
+    public void PlaceCursor(PointI position) => SetCursorPos(position.X, position.Y);
+
+    private bool IsOwnClip(in RECT clip)
+    {
+        lock (_clipLock)
+        {
+            return _ownClip is { } own && SameRect(own, clip);
+        }
+    }
+
+    private static bool CurrentClipIs(in RECT rect) => GetClipCursor(out var current) && SameRect(current, rect);
+
+    private static bool SameRect(in RECT a, in RECT b) =>
+        a.Left == b.Left && a.Top == b.Top && a.Right == b.Right && a.Bottom == b.Bottom;
 
     private static string? GetText(nint window, bool isClass)
     {
@@ -387,5 +457,9 @@ public sealed unsafe class WindowsPlatform : IPlatform, IDisposable
         }
     }
 
-    public void Dispose() => OnControllingChanged(false);
+    public void Dispose()
+    {
+        ConfineCursor(null);
+        OnControllingChanged(false);
+    }
 }

@@ -30,6 +30,10 @@ public readonly record struct RectI(int Left, int Top, int Right, int Bottom)
 
     public int Height => Bottom - Top;
 
+    public bool IsEmpty => Right <= Left || Bottom <= Top;
+
+    public PointI Center => new(Left + Width / 2, Top + Height / 2);
+
     public bool Contains(int x, int y) => x >= Left && x < Right && y >= Top && y < Bottom;
 
     public bool Contains(PointI p) => Contains(p.X, p.Y);
@@ -151,6 +155,29 @@ public sealed class DesktopLayout
         }
 
         return new EdgeExit(side, m, edgePoint, overshoot, FractionAlong(side, edgePoint));
+    }
+
+    /// <summary>
+    /// Whether <paramref name="p"/> is within <paramref name="distance"/> pixels of an
+    /// outward-facing edge on one of the given sides.
+    /// </summary>
+    public bool IsNearOutwardEdge(PointI p, IReadOnlyCollection<Side> sides, int distance)
+    {
+        foreach (var side in sides)
+        {
+            var probe = side switch
+            {
+                Side.Left => new PointI(p.X - distance, p.Y),
+                Side.Right => new PointI(p.X + distance, p.Y),
+                Side.Top => new PointI(p.X, p.Y - distance),
+                _ => new PointI(p.X, p.Y + distance),
+            };
+            if (FindExit(p, probe) is { } exit && exit.Side == side)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>True when no other monitor lies beyond <paramref name="m"/>'s edge on that side at that coordinate.</summary>
