@@ -19,7 +19,8 @@ public enum ControlState
     ControlledBy,
 }
 
-public sealed record EngineStatus(ControlState State, string? PeerName, string? GameModeReason, bool Paused);
+/// <param name="GameMenuOpen">The focused game's menu is open (Esc), so the mouse is free.</param>
+public sealed record EngineStatus(ControlState State, string? PeerName, string? GameModeReason, bool Paused, bool GameMenuOpen = false);
 
 /// <summary>
 /// The brain of Lan Connect: decides when control moves between computers and routes input.
@@ -40,6 +41,13 @@ public sealed class SwitchEngine : IDisposable
     /// </summary>
     private const long SecondaryDialDelayMs = 6000;
 
+    /// <summary>
+    /// After a game, the edges only work once the cursor has been this far (px) from them: a
+    /// game's invisible cursor is often left pinned against an edge, and a nudge would otherwise
+    /// carry it straight to the other computer.
+    /// </summary>
+    private const int RearmDistance = 100;
+
     private readonly IPlatform _platform;
     private readonly SettingsStore _settings;
     private readonly NetworkHost _host;
@@ -49,6 +57,8 @@ public sealed class SwitchEngine : IDisposable
     private readonly SwitchHotkeyDetector _hotkeys = new();
     private readonly EdgeSwitchPolicy _edgePolicy = new();
     private readonly EdgeSwitchPolicy _leavePolicy = new();
+    private readonly GameSession _game = new();
+    private readonly object _gameRefreshLock = new();
     private readonly PressedInputTracker _injected = new();
     private readonly Dictionary<Side, string> _placements = new();
     private readonly List<Side> _activeSides = new();
@@ -63,6 +73,9 @@ public sealed class SwitchEngine : IDisposable
     private Side _peerSide;
     private PointI _tracked;
     private string? _gameModeReason;
+    private bool _gameMenuOpen;
+    private bool _edgeArmed = true;
+    private bool _disposed;
     private bool _paused;
     private bool _mouseHookEnabled;
     private long _lastDialMs;
@@ -118,7 +131,7 @@ public sealed class SwitchEngine : IDisposable
         {
             lock (_lock)
             {
-                return new EngineStatus(_state, _peer?.PeerName, _gameModeReason, _paused);
+                return new EngineStatus(_state, _peer?.PeerName, _gameModeReason, _paused, _gameMenuOpen);
             }
         }
     }
@@ -136,6 +149,7 @@ public sealed class SwitchEngine : IDisposable
                     EndControlLocked(takeBack: true, leaveFraction: null);
                 }
             }
+            ThreadPool.QueueUserWorkItem(_ => RefreshGameMode()); // paused: let go of a game's cursor
             UpdateMouseHook();
             RaiseStatus();
         }
@@ -202,6 +216,10 @@ public sealed class SwitchEngine : IDisposable
                 case ControlState.Local when !_paused && _activeSides.Count > 0:
                     {
                         var from = _platform.GetCursorPosition();
+                        if (!_edgeArmed && !_layout.IsNearOutwardEdge(from, _activeSides, RearmDistance))
+                        {
+                            _edgeArmed = true;
+                        }
                         if (!EdgeSwitchPolicy.TouchesActiveEdge(_layout, _activeSides, from, proposed))
                         {
                             _edgePolicy.Reset();
@@ -211,7 +229,7 @@ public sealed class SwitchEngine : IDisposable
                         {
                             _router.PruneLocal(_isKeyDown); // a missed release must not block switching
                         }
-                        var blocked = _router.AnyLocalButtonHeld || IsGameBlockedNow();
+                        var blocked = !_edgeArmed || _router.AnyLocalButtonHeld || IsGameBlockedNow();
                         var decision = _edgePolicy.Evaluate(_layout, _activeSides, from, proposed, nowMs, blocked);
                         if (decision is { } d && _placements.TryGetValue(d.Side, out var id) && _host.GetLink(id) is { } link)
                         {
@@ -240,6 +258,10 @@ public sealed class SwitchEngine : IDisposable
     {
         lock (_lock)
         {
+            if (e.Kind == InputEventKind.Key && GameSession.Watches(e.VirtualKey))
+            {
+                WatchGameKeyLocked(e);
+            }
             if (_hotkeys.Feed(e) is { } direction && !_paused
                 && (_state != ControlState.Local || _hotkeys.ConfirmModifiers(_isKeyDown)))
             {
@@ -250,6 +272,22 @@ public sealed class SwitchEngine : IDisposable
                 }
             }
             return RouteLocked(e);
+        }
+    }
+
+    /// <summary>Esc opens and closes a game's menu; the mouse is free while it is open.</summary>
+    private void WatchGameKeyLocked(in InputEvent e)
+    {
+        // Only keys that reach this computer's apps count.
+        var foreground = _state == ControlState.Local && !_paused ? _platform.GetForegroundWindowHandle() : 0;
+        // A modifier counts when the hook saw it pressed and Windows agrees it still is.
+        var shortcut = e.Down && foreground != 0
+            && (_hotkeys.CurrentModifiers & (HotkeyModifiers.Ctrl | HotkeyModifiers.Alt | HotkeyModifiers.Win)) != 0
+            && (_isKeyDown(VirtualKeys.Control) || _isKeyDown(VirtualKeys.Menu) || _isKeyDown(VirtualKeys.LWin) || _isKeyDown(VirtualKeys.RWin));
+        if (_game.OnKey(e, foreground, PeerLink.NowMs, shortcut))
+        {
+            // On the hook thread: apply it (free or lock the cursor, mouse hook) elsewhere, now.
+            ThreadPool.QueueUserWorkItem(_ => RefreshGameMode());
         }
     }
 
@@ -330,6 +368,7 @@ public sealed class SwitchEngine : IDisposable
         _state = ControlState.Local;
         _peer = null;
         _edgePolicy.Reset();
+        _edgeArmed = true; // the cursor is placed on purpose now, not left at an edge by a game
         if (leaveFraction is { } f)
         {
             // Continue exactly where the cursor left the other screen.
@@ -644,22 +683,12 @@ public sealed class SwitchEngine : IDisposable
         try
         {
             // Game mode: checked a few times a second so the mouse hook can be removed while gaming.
-            string? reason = null;
-            if (_config.GameMode.Enabled)
-            {
-                reason = GameModeRules.BlockReason(_platform.GetForegroundState(), _config.GameMode);
-            }
+            var statusChanged = UpdateGameModeState();
 
-            var statusChanged = false;
             var outputs = RentOutputs();
             lock (_lock)
             {
                 _router.ExpireStale();
-                if (reason != _gameModeReason)
-                {
-                    _gameModeReason = reason;
-                    statusChanged = true;
-                }
 
                 // Watchdog: never leave the user without a mouse if the other computer goes quiet.
                 // Silence counts from the switch at the earliest: an idle peer only sends a packet
@@ -757,9 +786,83 @@ public sealed class SwitchEngine : IDisposable
 
     private long SilenceSinceSwitch(PeerLink peer) => Math.Min(peer.SilenceMs, PeerLink.NowMs - _controlStartedMs);
 
+    /// <summary>Re-evaluates game mode right away (a game's menu opened or closed, pause changed).</summary>
+    private void RefreshGameMode()
+    {
+        try
+        {
+            if (UpdateGameModeState())
+            {
+                UpdateMouseHook();
+                RaiseStatus();
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Error("Game mode update failed", e);
+        }
+    }
+
+    /// <summary>
+    /// Why the edges are blocked, whether the focused game's menu is open, and whether to keep a
+    /// game's cursor on its screen. Returns whether the status changed.
+    /// </summary>
+    private bool UpdateGameModeState()
+    {
+        // One update at a time (timer and key presses), so an older look at the foreground can
+        // never be applied after a newer one.
+        lock (_gameRefreshLock)
+        {
+            if (_disposed)
+            {
+                return false;
+            }
+            var options = _config.GameMode;
+            var state = options.Enabled ? _platform.GetForegroundState() : ForegroundState.Desktop;
+            var cursor = _platform.GetCursorPosition();
+            RectI? confine;
+            PointI? recenter;
+            var statusChanged = false;
+            lock (_lock)
+            {
+                var menuOpen = _game.IsMenuOpen(state.Window);
+                var reason = GameModeRules.BlockReason(state, options, menuOpen);
+                confine = _game.Update(state, cursor, canConfine: _state == ControlState.Local && !_paused);
+                recenter = _game.TakeRecenter();
+                if (reason != _gameModeReason)
+                {
+                    if (reason is null && _state == ControlState.Local)
+                    {
+                        _edgeArmed = false;
+                    }
+                    _gameModeReason = reason;
+                    statusChanged = true;
+                }
+                if (menuOpen != _gameMenuOpen)
+                {
+                    _gameMenuOpen = menuOpen;
+                    statusChanged = true;
+                }
+            }
+            _platform.ConfineCursor(confine);
+            if (recenter is { } spot)
+            {
+                _platform.PlaceCursor(spot);
+            }
+            return statusChanged;
+        }
+    }
+
     /// <summary>Checked at the moment of an edge crossing, so it is always current.</summary>
-    private bool IsGameBlockedNow() =>
-        _config.GameMode.Enabled && GameModeRules.BlockReason(_platform.GetForegroundState(), _config.GameMode) is not null;
+    private bool IsGameBlockedNow()
+    {
+        if (!_config.GameMode.Enabled)
+        {
+            return false;
+        }
+        var state = _platform.GetForegroundState();
+        return GameModeRules.BlockReason(state, _config.GameMode, _game.IsMenuOpen(state.Window)) is not null;
+    }
 
     private void UpdateMouseHook()
     {
@@ -839,6 +942,7 @@ public sealed class SwitchEngine : IDisposable
         {
             _edgePolicy.Options = _config.Edges;
             _leavePolicy.Options = _config.Edges;
+            _game.Options = _config.GameMode;
             _hotkeys.Modifiers = _config.SwitchHotkey;
             _host.AllowIncomingPairing = _config.AllowPairingRequests;
             if (_discovery is not null)
@@ -909,6 +1013,11 @@ public sealed class SwitchEngine : IDisposable
     public void Dispose()
     {
         _timer.Dispose();
+        lock (_gameRefreshLock)
+        {
+            _disposed = true;
+            _platform.ConfineCursor(null);
+        }
         _settings.Changed -= OnSettingsChanged;
         _host.PeerConnected -= OnPeerConnected;
         _host.PeerDisconnected -= OnPeerDisconnected;

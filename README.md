@@ -8,7 +8,9 @@ Built to fix the problems of tools like Lan Mouse:
 
 - **Gaming-safe.** Game mode stops edge switching while a game is focused (hidden or
   locked cursor, fullscreen apps, GeForce NOW by default) and removes the mouse hook
-  entirely, so games get untouched input. The hotkey still works.
+  entirely, so games get untouched input. The hotkey still works. Games that hide the
+  cursor but don't lock it (Skyrim, for example) can't drift onto your other screens
+  while you play, and pressing Esc for the game's menu frees the mouse.
 - **No accidental switches.** Corners never switch (close buttons, Start, "show desktop"),
   a small push past the edge is needed, and dragging with a button held never switches.
 - **No stuck keys.** Every key press and its release always go to the same computer.
@@ -51,6 +53,7 @@ That's it. Both computers reconnect by themselves from now on, even after restar
 |---|---|
 | Move to the other computer | Push the mouse past the screen edge that faces it |
 | Switch without the mouse (works in games) | **Ctrl + Alt + arrow** pointing at the other computer |
+| Leave a game for another screen or computer | Press **Esc** to open the game's menu, then move the mouse. **Esc** again (or just walking with W, A, S, D) and the game has the mouse to itself again |
 | Come back | Push the mouse back across the edge, or **Ctrl + Alt + arrow** pointing home |
 | Copy and paste between computers | Copy as usual, move to the other computer, paste. Files work too (Ctrl + C in File Explorer, Ctrl + V on the other side) |
 | Pause everything | Tray icon → *Pause Lan Connect* |
@@ -70,7 +73,9 @@ Left-click the tray icon to open settings:
 - **Switching**: hotkey modifiers, edge resistance (how far to push), dead-corner size.
 - **Clipboard**: turn sharing on or off, include files or not, and the largest file transfer.
 - **Game mode**: which signals count as "in a game", and a list of apps (`game.exe`) or
-  window-title words (`GeForce NOW`) where the edges never switch.
+  window-title words (`GeForce NOW`) where the edges never switch, even in a game's menu.
+  Also: keep the mouse on the game's screen while you play, and free it while the
+  game's menu is open (Esc).
 - **General**: this computer's name, start with Windows, visibility, pairing requests.
 
 Settings are stored in `%APPDATA%\LanConnect\settings.json`. Logs are in
@@ -89,6 +94,13 @@ Settings are stored in `%APPDATA%\LanConnect\settings.json`. Logs are in
   5 GHz. A wired connection on at least one computer helps the most.
 - **Can't click in Task Manager or admin prompts on the controlled computer.** Windows
   doesn't let normal apps send input to elevated windows. Support for this is planned.
+- **The cursor is invisible after Alt + Tab out of a game.** Some games, Skyrim among
+  them, keep it hidden until you click once. That comes from the game; one click brings
+  it back.
+- **The game's menu doesn't free the mouse.** Lan Connect follows the menu by watching Esc,
+  so a menu opened with another key (Tab, I, M...) stays "in game". Press Esc to open
+  the main menu instead. If it ever gets out of step, walk a step in the game (W, A, S
+  or D) and it corrects itself.
 - **A game's anti-cheat complains.** Only the controlled computer receives injected
   input. Play on the computer that has the physical mouse and keyboard.
 

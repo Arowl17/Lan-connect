@@ -225,6 +225,11 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool GetClipCursor(out RECT lpRect);
 
+    /// <summary>Null releases the lock.</summary>
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static unsafe partial bool ClipCursor(RECT* lpRect);
+
     [LibraryImport("user32.dll")]
     public static partial nint GetForegroundWindow();
 

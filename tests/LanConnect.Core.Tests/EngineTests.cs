@@ -35,6 +35,30 @@ internal sealed class FakePlatform(DesktopLayout layout) : IPlatform
 
     public ForegroundState GetForegroundState() => Foreground;
 
+    public nint GetForegroundWindowHandle() => Foreground.Window;
+
+    /// <summary>Where Lan Connect keeps the cursor (null = free).</summary>
+    public RectI? Confined { get; private set; }
+
+    public void ConfineCursor(RectI? area)
+    {
+        Confined = area;
+        Cursor = KeepInside(Cursor);
+    }
+
+    /// <summary>Like Windows, moves the cursor into the confinement area.</summary>
+    public PointI KeepInside(PointI p) => Confined is { } a
+        ? new PointI(Math.Clamp(p.X, a.Left, a.Right - 1), Math.Clamp(p.Y, a.Top, a.Bottom - 1))
+        : p;
+
+    public PointI? LastPlaced { get; private set; }
+
+    public void PlaceCursor(PointI position)
+    {
+        LastPlaced = position;
+        Cursor = KeepInside(position);
+    }
+
     /// <summary>Simulates Windows applying injected moves late: the cursor reads one move behind.</summary>
     public bool LagMoves { get; set; }
 
@@ -114,7 +138,7 @@ internal sealed class TestComputer : IAsyncDisposable
         var swallowed = Engine.HandleMouseMove(proposed, PeerLink.NowMs);
         if (!swallowed)
         {
-            Platform.Cursor = Platform.Layout.Clamp(proposed);
+            Platform.Cursor = Platform.KeepInside(Platform.Layout.Clamp(proposed));
         }
         return swallowed;
     }

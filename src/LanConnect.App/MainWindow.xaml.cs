@@ -80,6 +80,8 @@ public partial class MainWindow : Window
             GameHidden.IsChecked = s.GameMode.BlockWhenCursorHidden;
             GameLocked.IsChecked = s.GameMode.BlockWhenCursorLocked;
             GameFullscreen.IsChecked = s.GameMode.BlockWhenFullscreen;
+            GameKeepOnScreen.IsChecked = s.GameMode.KeepCursorOnGameScreen;
+            GameFreeOnEscape.IsChecked = s.GameMode.FreeMouseOnEscape;
             GameOptions.IsEnabled = s.GameMode.Enabled;
             GameList.ItemsSource = s.GameMode.BlockedApps.Concat(s.GameMode.BlockedTitles).ToList();
             if (!DeviceName.IsKeyboardFocused)
@@ -115,6 +117,7 @@ public partial class MainWindow : Window
             { State: ControlState.ControlledBy } => ($"{status.PeerName} is controlling this computer", (Brush)FindResource("Good")),
             _ when connected.Count == 0 => ("No computers connected yet", (Brush)FindResource("Muted")),
             { GameModeReason: { } reason } => ($"Game mode: edge switching paused because {reason}. The hotkey still works.", (Brush)FindResource("Warning")),
+            { GameMenuOpen: true } => ("Game menu open: the mouse is free. Esc takes you back to the game.", (Brush)FindResource("Good")),
             _ => ($"Ready. Connected to {string.Join(", ", connected.Select(d => d.Name))}", (Brush)FindResource("Good")),
         };
         StatusText.Text = text;
@@ -390,6 +393,8 @@ public partial class MainWindow : Window
         var hidden = GameHidden.IsChecked == true;
         var locked = GameLocked.IsChecked == true;
         var fullscreen = GameFullscreen.IsChecked == true;
+        var keepOnScreen = GameKeepOnScreen.IsChecked == true;
+        var freeOnEscape = GameFreeOnEscape.IsChecked == true;
         GameOptions.IsEnabled = enabled;
         _services.Settings.Update(s =>
         {
@@ -397,6 +402,8 @@ public partial class MainWindow : Window
             s.GameMode.BlockWhenCursorHidden = hidden;
             s.GameMode.BlockWhenCursorLocked = locked;
             s.GameMode.BlockWhenFullscreen = fullscreen;
+            s.GameMode.KeepCursorOnGameScreen = keepOnScreen;
+            s.GameMode.FreeMouseOnEscape = freeOnEscape;
         });
     }
 

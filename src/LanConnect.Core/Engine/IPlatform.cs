@@ -15,6 +15,18 @@ public interface IPlatform
     /// <summary>Snapshot of the focused app and cursor state, used by game mode.</summary>
     ForegroundState GetForegroundState();
 
+    /// <summary>The focused window (the same id as <see cref="ForegroundState.Window"/>). Must be cheap.</summary>
+    nint GetForegroundWindowHandle();
+
+    /// <summary>
+    /// Keeps the cursor inside <paramref name="area"/>, or releases Lan Connect's own lock with
+    /// null (a lock set by another app is left alone). Called repeatedly with the same value.
+    /// </summary>
+    void ConfineCursor(RectI? area);
+
+    /// <summary>Puts the cursor somewhere without it counting as mouse input (games don't see it).</summary>
+    void PlaceCursor(PointI position);
+
     /// <summary>Moves the cursor as real mouse input would (so hover effects work).</summary>
     void MoveCursorTo(PointI position);
 

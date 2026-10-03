@@ -103,6 +103,10 @@ internal sealed class TrayIcon : IDisposable
         {
             return (_game, $"Lan Connect: game mode ({status.GameModeReason}). Use {HotkeyText()} to switch");
         }
+        if (status.GameMenuOpen)
+        {
+            return (_ready, "Lan Connect: game menu open, the mouse is free");
+        }
         return (_ready, $"Lan Connect: ready ({string.Join(", ", connected.Select(d => d.Name))})");
     }
 
